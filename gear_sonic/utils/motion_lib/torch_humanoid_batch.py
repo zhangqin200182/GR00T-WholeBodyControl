@@ -15,7 +15,10 @@ import numpy as np
 from omegaconf import DictConfig
 
 # import logging
-import open3d as o3d
+try:
+    import open3d as o3d
+except ImportError:
+    o3d = None
 from rich.progress import track
 import scipy.ndimage.filters as filters
 from scipy.spatial.transform import Rotation as sRot
@@ -752,6 +755,10 @@ class Humanoid_Batch:
         return angular_velocity
 
     def load_mesh(self):
+        if o3d is None:
+            self.mesh_dict = {}
+            self.mesh_to_body = {}
+            return
         xml_base = os.path.dirname(self.mjcf_file)
         # Read the compiler tag from the g1.xml file to find if there is a meshdir defined
         tree = ETree.parse(self.mjcf_file)

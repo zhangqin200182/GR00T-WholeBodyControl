@@ -28,18 +28,21 @@ if _repo_root not in sys.path:
 try:
     import isaaclab  # noqa: F401
 except ImportError:
-    print(
-        "\n"
-        "ERROR: Isaac Lab is required for training but not installed.\n"
-        "\n"
-        "Isaac Lab is not a pip dependency — it must be installed separately.\n"
-        "Follow the official guide:\n"
-        "  https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html\n"
-        "\n"
-        "After installing, activate the Isaac Lab conda/venv environment\n"
-        "before running this script.\n"
-    )
-    sys.exit(1)
+    if not os.environ.get("SONIC_STUB_ENV"):
+        print(
+            "\n"
+            "ERROR: Isaac Lab is required for training but not installed.\n"
+            "\n"
+            "Isaac Lab is not a pip dependency — it must be installed separately.\n"
+            "Follow the official guide:\n"
+            "  https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html\n"
+            "\n"
+            "After installing, activate the Isaac Lab conda/venv environment\n"
+            "before running this script.\n"
+            "\n"
+            "To train without Isaac Sim (stub mode), set SONIC_STUB_ENV=1\n"
+        )
+        sys.exit(1)
 
 import glob
 import logging
@@ -154,7 +157,7 @@ def create_manager_env(config, device, args_cli):
 
 @hydra.main(config_path="config", config_name="base", version_base="1.1")
 def main(config: OmegaConf):
-    simulator_type = "IsaacSim"
+    simulator_type = "Stub" if os.environ.get("SONIC_STUB_ENV") else "IsaacSim"
     env_config = config.manager_env
     from transformers import HfArgumentParser
     from trl import ModelConfig, PPOConfig, ScriptArguments
@@ -179,16 +182,36 @@ def main(config: OmegaConf):
     from accelerate import Accelerator, DistributedDataParallelKwargs, InitProcessGroupKwargs
     import torch  # noqa: E402
 
+    # NPU detection — must happen before Accelerator creation
+    _is_npu = False
+    try:
+        import torch_npu  # noqa: F401
+        if torch.npu.is_available():
+            _is_npu = True
+            training_args.bf16 = False
+            training_args.fp16 = False
+            logger.info("NPU detected — forcing fp32 (NPU doesn't support bf16 torch.normal)")
+    except ImportError:
+        pass
+
+    _mixed_precision = "no" if _is_npu else None
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
     kwargs = InitProcessGroupKwargs(timeout=timedelta(seconds=6000))
     accelerator = Accelerator(
         gradient_accumulation_steps=training_args.gradient_accumulation_steps,
         kwargs_handlers=[ddp_kwargs, kwargs],
+        mixed_precision=_mixed_precision,
     )
 
     device = str(accelerator.device)
     if device == "cuda":
         device = "cuda:0"
+
+    if _is_npu:
+        device = f"npu:{torch.npu.current_device()}"
+        logger.info(f"Using NPU device: {device}")
+
+    _use_stub_env = bool(os.environ.get("SONIC_STUB_ENV"))
     config.multi_gpu = accelerator.num_processes > 1
     if config.multi_gpu:
         config.global_rank = accelerator.process_index
@@ -278,10 +301,11 @@ def main(config: OmegaConf):
 
         simulation_app = app_launcher.app
 
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cudnn.deterministic = False
-    torch.backends.cudnn.benchmark = False
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = False
 
     from gear_sonic.utils.logging import HydraLoggerBridge
 
@@ -318,7 +342,12 @@ def main(config: OmegaConf):
     env_config.config.save_rendering_dir = str(Path(config.experiment_dir) / "renderings_training")
     env_config.config.experiment_dir = str(Path(config.experiment_dir))
 
-    env = create_manager_env(config, device, args_cli)
+    if _use_stub_env:
+        from gear_sonic.envs.stub_env import StubEnv
+        logger.info("Using StubEnv (no physics simulation)")
+        env = StubEnv(config, env_config, device)
+    else:
+        env = create_manager_env(config, device, args_cli)
     if config.get("replay", False):
         _save_video_path = config.get("replay_save_video", None)
         env.run_replay(
