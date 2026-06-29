@@ -17,6 +17,7 @@ from trl.models import utils as models_utils
 from trl.trainer import utils as trainer_utils
 from trl.trainer.ppo_trainer import *  # noqa: F403
 import wandb
+from torch.utils.tensorboard import SummaryWriter
 
 # Conditional peft imports
 if accelerate_utils.is_peft_available():
@@ -236,9 +237,21 @@ class PrinterHVCallback(TrainerCallback):  # noqa: F405
     A bare [`TrainerCallback`] that just prints the logs.
     """  # noqa: D200, D212
 
+    _tb_writer = None
+
     def on_log(self, args, state, control, logs=None, **kwargs):  # noqa: ARG002
         _ = logs.pop("total_flos", None)
         if state.is_world_process_zero:
+            if self._tb_writer is None and "experiment_save_dir" in logs:
+                tb_dir = os.path.join(logs["experiment_save_dir"], "tb")
+                self._tb_writer = SummaryWriter(log_dir=tb_dir)
+
+            if self._tb_writer is not None:
+                step = state.global_step
+                for k, v in logs.items():
+                    if isinstance(v, (int, float)):
+                        self._tb_writer.add_scalar(k, v, step)
+                self._tb_writer.flush()
             width = 80
             pad = 35
             print_str = f" \033[1m Learning iteration {state.global_step}  \033[0m "
