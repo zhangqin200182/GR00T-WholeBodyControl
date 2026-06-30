@@ -95,7 +95,26 @@ GR00T N1.7 不是选项（NVIDIA 专有 + CUDA-only）。开源替代：
 └────────────────────────────────────────────────────────────┘
 ```
 
-### 2.3 训练策略：LoRA + 冻结视觉编码器
+### 2.3 训练策略
+
+原版 Isaac-GR00T 使用全参微调（4×A100-80GB 装得下 3B 模型）。NPU 上两种都可行：
+
+#### 策略 A：全参微调（对齐原版）
+
+```
+组件              冻结?    训练方式
+────────────────  ──────  ───────────
+Vision Encoder    训练    低 lr (1e-5)
+Language Model    训练    正常 lr (2e-4)
+Projector         训练    正常 lr
+Action Head       训练    正常 lr (新模块)
+State Proj        训练    正常 lr (新模块)
+─────────────────────────────────────
+可训练参数:        3B (全量)
+推荐硬件:          16 × Ascend 910
+```
+
+#### 策略 B：LoRA（轻量起步）
 
 ```
 组件              冻结?    训练方式      原因
@@ -107,7 +126,20 @@ Action Head       全量    全量训练      新模块，从头训练
 State Proj        全量    全量训练      新模块
 ───────────────────────────────────────────────────────
 可训练参数:        ~150M (含 LoRA)，总 3B
+推荐硬件:          4 × Ascend 910
 ```
+
+#### 选择建议
+
+| | 全参微调 | LoRA |
+|---|---------|------|
+| 适用场景 | 数据充足 (200+ demos)，追求最优 | 数据较少 (50-100 demos)，快速迭代 |
+| 训练稳定性 | 可能过拟合小数据 | 正则化更好，不易过拟合 |
+| Checkpoint | 6 GB | 500 MB |
+| 迁移到新 task | 重训整个模型 | 换一个 LoRA adapter |
+| 与原版一致性 | ✅ 对齐 Isaac-GR00T | 略有差异 |
+
+**建议路线：先 LoRA 验证 pipeline，效果好就保持；欠拟合再切全参。**
 
 ## 3. 训练数据
 
@@ -139,22 +171,32 @@ outputs/2026-04-03-14-30-00-G1-robot01/
 
 ## 4. 训练配置
 
-### 4.1 超参数（对齐 Isaac-GR00T）
+### 4.1 超参数
+
+#### 全参微调（对齐 Isaac-GR00T）
 
 | 参数 | 值 | 说明 |
 |------|-----|------|
 | base_model | Qwen2.5-VL-3B | 替代 GR00T N1.7 |
-| LoRA rank | 64 | 语言模型 |
-| LoRA alpha | 128 | — |
 | max_steps | 20,000 | 对齐原版 |
 | global_batch_size | 32 | 对齐原版 |
-| learning_rate | 2e-4 | LoRA 适配 |
+| learning_rate | 1e-4 (LLM) / 1e-5 (Vision) | 分层 lr |
 | lr_schedule | cosine | warmup=500 steps |
 | optimizer | AdamW | weight_decay=0.01 |
 | gradient_accumulation | 按 NPU 数量调整 | 保持 global batch=32 |
 | precision | FP16 (mixed) | NPU 原生支持 |
+| gradient_checkpointing | True | 省显存，batch 从 2 → 3 |
 | max_seq_length | 2048 tokens | 视觉+文本 |
 | image_size | 384×384 | 对齐 SigLIP |
+
+#### LoRA 微调
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| LoRA rank | 64 | 语言模型 |
+| LoRA alpha | 128 | — |
+| learning_rate | 2e-4 | LoRA 适配（比全参略高） |
+| 其余同上 | — | — |
 
 ### 4.2 数据增强（对齐 Isaac-GR00T）
 
@@ -166,8 +208,35 @@ outputs/2026-04-03-14-30-00-G1-robot01/
 
 ### 5.1 显存估算
 
+#### 全参微调
+
 ```
-Qwen2.5-VL-3B, LoRA, batch=1, FP16:
+Qwen2.5-VL-3B, 全参, batch=1, FP16 + gradient checkpoint:
+
+  模型权重:              3B  × 2B  =  6.0 GB
+  AdamW 状态 (m+v):      3B  × 4B  = 12.0 GB
+  梯度:                  3B  × 2B  =  6.0 GB
+  ─────────────────────────────────────────
+  静态占用:                         = 24.0 GB
+
+  激活值 (batch=1, gradient checkpoint):
+    Vision Encoder (384²):          ~1.0 GB
+    Language Model (2048 tokens):   ~2.0 GB
+    Action Head:                    ~0.2 GB
+  ─────────────────────────────────────────
+  激活总计:                          ~3.2 GB
+
+  每卡 batch=1 总显存:             ~27.2 GB
+  Ascend 910 HBM:                  61.3 GB
+  安全余量 (80%):                  49.0 GB
+  每卡最大 batch:                  2
+  gradient checkpoint 提升:         batch → 3 (省 ~30% 激活)
+```
+
+#### LoRA 微调
+
+```
+Qwen2.5-VL-3B, LoRA rank=64, batch=1, FP16:
 
   Vision Encoder (冻结):       ~0.8 GB
   Language Model (LoRA):       ~5.0 GB (base) + ~0.3 GB (LoRA)
@@ -182,24 +251,40 @@ Qwen2.5-VL-3B, LoRA, batch=1, FP16:
   安全 batch (80%):            batch=4
 ```
 
-### 5.2 NPU 数量与配置
+### 5.2 NPU 配置对比
 
-| NPU 数量 | 每卡 batch | 梯度累积 | 等效 global batch | 每步时间 | 总训练时间 |
-|---------|-----------|---------|------------------|---------|----------|
+#### 全参微调
+
+| NPU 数量 | 每卡 batch | 梯度累积 | global batch | 每步时间 | 总训练时间 |
+|---------|-----------|---------|-------------|---------|----------|
+| 16 | 2 | — | 32 | ~2.5s | ~14 小时 |
+| 24 | 2 | — | 48 | ~2.0s | ~11 小时 |
+| 32 | 1 | — | 32 | ~2.8s | ~16 小时 |
+
+> 16 卡全参微调 ≈ 14 小时完成 20K steps，总 batch=32。
+
+#### LoRA 微调
+
+| NPU 数量 | 每卡 batch | 梯度累积 | global batch | 每步时间 | 总训练时间 |
+|---------|-----------|---------|-------------|---------|----------|
 | 4 | 4 | 2 | 32 | ~2.0s | ~11 小时 |
 | 8 | 4 | 1 | 32 | ~1.5s | ~8 小时 |
 | 16 | 4 | — | 64 | ~1.2s | ~7 小时 |
 
-> 注：VLA forward 包含视觉编码器（~200ms）和 LLM decode（~500ms），比纯 MLP 慢很多。估算基于 Qwen2.5-VL-3B 在 Ascend 910 上的性能数据。
-
 ### 5.3 硬件推荐
 
 ```
-推荐配置:  4 × Ascend 910 NPU (61GB)
-最小配置:  2 × Ascend 910 (batch=2, accumulate=4)
-训练时长:  ~11 小时 / task (50-100 demos)
-存储:      ~50GB (数据集) + ~20GB (checkpoint × 5)
-```
+全参微调 (对齐原版):
+  推荐:  16 × Ascend 910 NPU (61GB)
+  训练:  ~14 小时 / task
+  Checkpoint: ~6 GB × 5 = 30 GB
+  
+LoRA (轻量起步):
+  推荐:  4-8 × Ascend 910 NPU
+  训练:  ~8-11 小时 / task
+  Checkpoint: ~500 MB × 5 = 2.5 GB
+
+存储 (通用):  ~50 GB (数据集) + checkpoint
 
 ## 6. 训练流程
 
@@ -297,12 +382,19 @@ python scripts/export_vla_for_deploy.py \
 ```
 Step 3 NPU VLA 微调:
 
-  模型:      Qwen2.5-VL-3B + LoRA + Action Head
+  模型:      Qwen2.5-VL-3B + Action Head
   训练:      image → token[64]+hands[14], MSE loss
   数据:      50-100 demos, ~100K frames (Step 2 产出)
-  NPU:       4 × Ascend 910 (61GB)
-  训练时长:   ~11 小时 / task
+
+  策略 A (全参):   16 × Ascend 910, ~14 小时,  6 GB/checkpoint
+  策略 B (LoRA):    4 × Ascend 910, ~11 小时, 500 MB/checkpoint
+
   不需要:    NVIDIA GPU, Isaac-GR00T, GR00T N1.7
+
+推荐路线:
+  1. LoRA 先验证 pipeline 和数据质量
+  2. 效果达标 → 保持 LoRA（更快迭代，更省资源）
+  3. 欠拟合 → 切换全参微调
 
 核心变化:
   GR00T N1.7 → Qwen2.5-VL-3B (开源替代)
