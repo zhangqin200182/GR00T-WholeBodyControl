@@ -222,7 +222,10 @@ class MuJoCoEnvManager:
         logger.info(f"MuJoCoEnvManager: {num_envs} envs × {self._actual_workers} workers")
 
     def step(self, actions):
-        """Trainer-side: distribute actions, wait, return results."""
+        """Trainer-side: distribute actions, wait, return results.
+
+        Raises RuntimeError on worker crash — caller must discard current rollout.
+        """
         act_buf = np.ndarray((self.num_envs, ACT_DIM), dtype=np.float32,
                              buffer=self._shm._actions.data)
         act_buf[:] = actions
@@ -233,6 +236,10 @@ class MuJoCoEnvManager:
         except mp.BrokenBarrierError:
             logger.error("Worker crashed! Discarding current rollout, re-spawning...")
             self._handle_worker_crash()
+            raise RuntimeError(
+                "Worker crash during step — current rollout data is stale, "
+                "trainer must discard and restart rollout from reset obs"
+            )
 
         obs = self._shm.read_obs()
         rewards = self._shm.read_rewards()
@@ -246,7 +253,9 @@ class MuJoCoEnvManager:
         for p in self._workers:
             p.terminate()
             p.join(timeout=5)
-        # Re-spawn (same args)
+        # Recreate barrier — old one is permanently broken after BrokenBarrierError
+        self._barrier = mp.Barrier(self._actual_workers + 1)
+        # Re-spawn workers with new barrier
         self._workers = []
         envs_per_worker = math.ceil(self.num_envs / self.num_workers)
         for i in range(self.num_workers):
