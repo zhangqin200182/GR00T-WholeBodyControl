@@ -1,19 +1,17 @@
 """MuJoCo environment for SONIC training — single env, ISAAC-SIM compatible."""
 import os, glob, numpy as np, mujoco, joblib
 
+NUM_DOF = 29
+NUM_FUTURE = 10  # num_future_frames from SONIC config
+
 
 class MuJoCoEnv:
-    """Single MuJoCo G1 environment with motion reference tracking.
-
-    Interface aligned with StubEnv/ManagerEnvWrapper:
-      reset()       → obs_dict
-      step(action)  → (obs_dict, reward, done, info)
-    """
+    """Single MuJoCo G1 environment with motion reference tracking."""
 
     def __init__(self, model_xml, pkl_dir, config=None):
         self.model = mujoco.MjModel.from_xml_path(model_xml)
-        self.native_dt = self.model.opt.timestep  # 0.002 (G1 model default)
-        self.decimation = 10  # 10×0.002 = 0.020s = 50 Hz
+        self.native_dt = self.model.opt.timestep
+        self.decimation = 10
         self.ctrl_dt = self.native_dt * self.decimation
         self.data = mujoco.MjData(self.model)
         self.nu = self.model.nu
@@ -64,7 +62,7 @@ class MuJoCoEnv:
             self.data.ctrl[:] = np.clip(t, -50, 50)
             mujoco.mj_step(self.model, self.data)
         self.ep += 1
-        self._ref_idx = getattr(self, '_ref_idx', 0) + 1
+        self._ref_idx = getattr(self, "_ref_idx", 0) + 1
         self._ah[:, :-1] = self._ah[:, 1:]; self._ah[:, -1] = action
         self._jph[:, :-1] = self._jph[:, 1:]; self._jph[:, -1] = self.data.qpos[7:]
         self._jvh[:, :-1] = self._jvh[:, 1:]; self._jvh[:, -1] = self.data.qvel[6:]
@@ -81,14 +79,41 @@ class MuJoCoEnv:
             obs = self.reset()
         return obs, r, done, {"time_outs": trunc, "terminal_obs": tobs}
 
+    # ---- Observation helpers ----
+    def _future_dof(self):
+        """Get future NUM_FUTURE frames from motion reference."""
+        idx = self._ref_idx
+        dof = self._ref_dof
+        n = len(dof)
+        indices = np.clip(np.arange(idx, idx + NUM_FUTURE), 0, n - 1)
+        return dof[indices].astype(np.float32)  # (10, 29)
+
     def _obs(self):
-        a = np.concatenate([
+        actor = np.concatenate([
             self._jph.flatten(), self._jvh.flatten(),
             self._gdh.flatten(), self._avh.flatten(), self._ah.flatten(),
-        ]).astype(np.float32)
-        # TODO: real critic_obs & tokenizer (required before Task 6 PPO integration)
-        return {
-            "actor_obs": a,
-            "critic_obs": np.concatenate([a, np.zeros(715, dtype=np.float32)]),
-            "tokenizer": np.zeros(1761, dtype=np.float32),
-        }
+        ]).astype(np.float32)  # 930
+
+        # Critic obs: actor + motion reference targets + contact placeholder
+        future_dof = self._future_dof()  # (10, 29)
+        motion_targets = np.concatenate([future_dof.flatten(), np.zeros(17 + 700, dtype=np.float32)])
+        critic = np.concatenate([actor, motion_targets[:715]]).astype(np.float32)  # 1645
+
+        # Tokenizer obs: minimal encoder input from motion reference
+        tokenizer = self._build_tokenizer(actor).astype(np.float32)  # 1761
+
+        return {"actor_obs": actor, "critic_obs": critic, "tokenizer": tokenizer}
+
+    def _build_tokenizer(self, actor):
+        """Minimal tokenizer obs for encoder compatibility.
+        Key field: command_multi_future_nonflat (flat joints ×NUM_FUTURE frames).
+        """
+        future = self._future_dof()  # (10, 29)
+        # command_multi_future_nonflat: joints + zero velocity → (10, 58)
+        cmd_future = np.concatenate([future, np.zeros_like(future)], axis=-1).flatten()  # 580
+        # Pad to 1761 total
+        result = np.zeros(1761, dtype=np.float32)
+        result[:580] = cmd_future
+        # encoder_index: random g1/teleop/smpl (uniform for now)
+        result[580] = np.random.randint(3)
+        return result
