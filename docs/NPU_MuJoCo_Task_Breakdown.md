@@ -2,6 +2,13 @@
 
 ## 任务总览
 
+> ⚠️ **所有任务的开发和验证都在 NPU 服务器上进行**
+>
+> 服务器: `113.46.41.54`, 容器: `rlinf-train`
+> 代码路径: `/root/GR00T-WholeBodyControl/`
+> 模型路径: `/root/GR00T-WholeBodyControl/gear_sonic_deploy/g1/`
+> MuJoCo: 3.10.0 已安装, Kunpeng 920 320c + 16 × Ascend 910
+
 ```
 Task 1: MuJoCo G1 模型验证          (独立)  ──┐
 Task 2: MotionLib 集成              (独立)  ──┤
@@ -28,9 +35,18 @@ Task 4 依赖 Task 3, 但可在 Task 3 开发期间先写好对比脚本框架
 
 ### 输入
 
-- `gear_sonic_deploy/g1/g1_29dof.xml` — G1 MuJoCo 模型
-- `gear_sonic_deploy/g1/meshes/` — STL 网格 (需转 binary)
+- `gear_sonic_deploy/g1/g1_29dof.xml` — G1 MuJoCo 模型 (服务器路径: `/root/GR00T-WholeBodyControl/gear_sonic_deploy/g1/`)
+- `gear_sonic_deploy/g1/meshes/` — STL 网格 (服务器已含原始 ASCII 文件, 需转 binary)
 - NPU 服务器 (rlinf-train 容器, MuJoCo 3.10.0 已安装)
+
+### 验证服务器
+
+```
+服务器:  113.46.41.54
+容器:    rlinf-train
+MuJoCo:  3.10.0
+XML:     /root/GR00T-WholeBodyControl/gear_sonic_deploy/g1/g1_29dof.xml
+Meshes:  /root/GR00T-WholeBodyControl/gear_sonic_deploy/g1/meshes/
 
 ### 详细设计
 
@@ -61,13 +77,25 @@ Step 1.3: 性能 benchmark
 
 ### 验证标准
 
-- [ ] G1 模型成功加载, 无 XML 解析错误
-- [ ] mj_step 无崩溃, 10000 步无 NaN
-- [ ] PD 控制下机器人能保持站立 ≥ 500 步
-- [ ] 单 env 物理耗时 ≤ 0.3ms (高于估算的 0.2ms 也接受)
-- [ ] 内存占用 ≤ 100KB/env
+- [x] G1 模型成功加载, 无 XML 解析错误
+- [x] mj_step 无崩溃, 10000 步无 NaN
+- [x] PD 控制下机器人能保持站立 ≥ 500 步
+- [x] 单 env 物理耗时 ≤ 0.3ms (实测: 0.939ms/ctrl_step, 0.235ms/substep)
+- [x] 内存占用 ≤ 100KB/env (实测: ~7 KB/env)
 
-### 预估工时: 0.5 天
+### 实测结果 (2026-07-07, Kunpeng 920)
+
+```
+模型:     31 bodies, 29 hinge joints, 29 actuators, 35 DOF
+Drop:     z=0.793 → 0.120, 正常倒地
+PD stand: 500/500 步不倒
+Random:   1000 步无 NaN
+Bench:    0.939 ms/step (含 decimation×4), 21 envs/core@20ms
+          320 cores → 6720 envs (远超 4096)
+Memory:   ~7 KB/env
+```
+
+### 预估工时: 0.5 天 ✅ 已完成
 
 ---
 
@@ -79,8 +107,8 @@ Step 1.3: 性能 benchmark
 
 ### 输入
 
-- `sample_data/robot_filtered/*.pkl` — Robot 运动 PKL
-- `sample_data/smpl_filtered/*.pkl` — SMPL 运动 PKL (需上传)
+- `sample_data/robot_filtered/*.pkl` — Robot 运动 PKL (服务器路径: `/root/GR00T-WholeBodyControl/sample_data/robot_filtered/`)
+- `sample_data/smpl_filtered/*.pkl` — SMPL 运动 PKL (服务器路径: `/root/GR00T-WholeBodyControl/sample_data/smpl_filtered/`)
 - `gear_sonic/utils/motion_lib/` — 现有 MotionLib 代码
 
 ### 详细设计
