@@ -90,9 +90,10 @@ def main():
             obs = {k: v.copy() for k, v in obs_next.items()}
 
         # ── Compute returns (simple MC, no GAE for POC) ──
+        # Note: value computation only uses critic_obs, action arg is unused
         values = []
-        for o in all_obs:
-            _, _, v = policy.evaluate(o, all_actions[0])
+        for step in range(num_steps):
+            _, _, v = policy.evaluate(all_obs[step], all_actions[step])
             values.append(v.detach().numpy())
         values = np.array(values)
 
