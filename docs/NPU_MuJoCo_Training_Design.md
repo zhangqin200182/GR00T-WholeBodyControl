@@ -201,7 +201,9 @@ class MuJoCoEnv:
         # 1. 应用 PD 控制
         self.data.ctrl[:] = action_to_torque(action, self.data)
         
-        # 2. 物理步进 (decimation=4, sim_dt=0.005)
+        # 2. 物理步进 (decimation=10, native_dt=0.002 → ctrl_dt=0.02=50Hz)
+        #    注: MuJoCo G1 模型原生 timestep=0.002, 非 Isaac Sim 的 0.005
+        #    10×0.002=20ms 与 Isaac Sim 的 4×0.005=20ms 等效
         for _ in range(4):
             mujoco.mj_step(self.model, self.data)
         

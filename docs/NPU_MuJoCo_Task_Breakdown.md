@@ -308,9 +308,16 @@ Step 4.4: 长时间序列对比
 
 实现多进程并行环境管理器，通过共享内存 + Barrier 同步，管理 4096 个 MuJoCo 环境。
 
+### 前置要求 (Task 5 开始前必须完成)
+
+- [ ] `_obs()` critic_obs 不再用零占位 — 需要真实 motion reference + contact 信息
+- [ ] `_obs()` tokenizer 不再用零占位 — 需要 encoder 输入格式的 motion 数据
+- [ ] `_compute_reward()` 接入 config 权重 — 9 项奖励按 sonic_release.yaml 计算
+- [ ] MuJoCoEnv 拆分为独立模块 `gear_sonic/envs/mujoco_env.py`
+
 ### 依赖
 
-- Task 3 (MuJoCoEnv 稳定)
+- Task 3 (MuJoCoEnv 稳定，上述 4 项已完成)
 
 ### 详细设计
 
