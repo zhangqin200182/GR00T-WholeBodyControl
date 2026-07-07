@@ -1,8 +1,79 @@
-# SONIC 远程训练架构设计：NPU 模型训练 + GPU 物理仿真
+# SONIC 远程训练架构设计：NPU 模型训练 + 物理仿真
 
 ---
 
-## 1. 背景：GPU 训练配置与性能
+## 0. 推荐方案：MuJoCo CPU + NPU 单机训练
+
+### 0.1 实测数据
+
+在 NPU 服务器 (Kunpeng 920, 320 核 aarch64, 16 × Ascend 910) 上实测 MuJoCo 性能：
+
+```
+MuJoCo 3.10.0, humanoid 模型 (14 bodies, 17 DOF):
+  单核单 env: 0.118 ms/step
+
+G1 29-DOF 等效估算 (1.7× humanoid):
+  单核单 env: ~0.20 ms/step
+  单核 @ 20ms 控制周期: ~99 envs
+  320 核 @ 20ms: ~31,680 envs ✅
+
+4096 envs 仅需 ~41 核 (13% CPU)，大幅余量给 OSMesa 渲染。
+```
+
+### 0.2 架构
+
+```
+┌── 同一台 NPU 服务器 (113.46.41.54) ─────────────────────────────┐
+│                                                                  │
+│  Kunpeng 920 CPU (320 核)           Ascend 910 NPU (16 卡)       │
+│  ┌────────────────────┐           ┌────────────────────────┐    │
+│  │ MuJoCo × 4096 envs │  SHM     │ PPO 训练                │    │
+│  │ 物理仿真 @ 50Hz     │ ←─────→ │ Encoder + FSQ + Decoder │    │
+│  │ OSMesa 渲染 camera  │  零拷贝   │ AllReduce (HCCL)        │    │
+│  │ 运动数据加载         │           │ 辅助 Loss               │    │
+│  └────────────────────┘           └────────────────────────┘    │
+│                                                                  │
+│  每步: MuJoCo ~0.2ms + NPU 推理 ~26ms = ~27ms                   │
+│  网络: 0（同机共享内存）                                           │
+│  GPU:  0（完全不需要）                                             │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 0.3 与各方案对比
+
+| | Isaac Sim (原版) | GPU+NPU 分离 | MuJoCo+NPU (推荐) |
+|---|----------------|-------------|-----------------|
+| 物理仿真 | 64 GPU (PhysX) | 64 GPU (PhysX) | **CPU (MuJoCo)** |
+| 模型训练 | 64 GPU | 16 NPU (远程) | **16 NPU (本地)** |
+| 网络通信 | 0 (同卡) | TCP ~6ms/步 | **0 (SHM)** |
+| 每步时间 | ~5ms | ~36ms | **~27ms** |
+| GPU 依赖 | 64 张 | 64 张 | **0** |
+| 机器数量 | 8+ 台 | 9 台 | **1 台** |
+| 训练时长 (100K) | ~0.7 天 | ~2.7 天 | **~2.0 天** |
+| 优化后 | — | ~1.1 天 | **~0.8 天** |
+
+### 0.4 需要开发的内容
+
+| 模块 | 说明 | 工作量 |
+|------|------|--------|
+| MuJoCo 并行环境管理器 | 替代 Isaac Lab `ManagerEnvWrapper`，管理 4096 envs | 大 |
+| OSMesa 渲染管线 | 替代 Isaac Sim 摄像头渲染，产出 camera image | 中 |
+| Observation/Reward 适配 | 确保 obs_dict 接口与 Isaac Sim 一致 | 中 |
+| SMPL 人体模型加载 | MuJoCo 中加载 SMPL 骨骼用于 motion reference | 中 |
+| Domain Randomization | MuJoCo 中实现地形/外观随机化 | 小 |
+
+### 0.5 为什么 MuJoCo 可行
+
+- **Google DeepMind 先例**：OP3、HumanoidBench 均基于 MuJoCo 训练人形机器人
+- **SONIC 架构解耦**：token → decoder → action，物理引擎只影响 reward 数值分布
+- **所有 9 个 reward 项 MuJoCo 都能算**：运动学跟踪 + 接触检测 + 关节限位
+- **NPU 推理已验证**：StubEnv 16 卡实测通过
+
+> ⚠️ 以下章节 (1-9) 描述的是 **GPU+NPU 分离方案**（备选路径）。如能实现 MuJoCo 环境管理器，推荐直接使用本章的 MuJoCo 单机方案。
+
+---
+
+## 1. 背景：GPU 训练配置与性能 (备选方案参考)
 
 ### 1.1 原始训练配置
 
