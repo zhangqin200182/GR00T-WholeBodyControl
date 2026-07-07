@@ -64,7 +64,7 @@ class MuJoCoEnv:
             self.data.ctrl[:] = np.clip(t, -50, 50)
             mujoco.mj_step(self.model, self.data)
         self.ep += 1
-        self._ref_idx += 1
+        self._ref_idx = getattr(self, '_ref_idx', 0) + 1
         self._ah[:, :-1] = self._ah[:, 1:]; self._ah[:, -1] = action
         self._jph[:, :-1] = self._jph[:, 1:]; self._jph[:, -1] = self.data.qpos[7:]
         self._jvh[:, :-1] = self._jvh[:, 1:]; self._jvh[:, -1] = self.data.qvel[6:]
