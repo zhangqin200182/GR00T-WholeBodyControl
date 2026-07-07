@@ -221,11 +221,17 @@ class MuJoCoEnvManager:
 
         logger.info(f"MuJoCoEnvManager: {num_envs} envs × {self._actual_workers} workers")
 
-    def step(self, actions):
+    def step(self, policy_state_dict):
         """Trainer-side: distribute actions, wait, return results.
+
+        Accepts both ``policy_state_dict`` (from ppo_trainer) and raw ``np.ndarray``.
 
         Raises RuntimeError on worker crash — caller must discard current rollout.
         """
+        if isinstance(policy_state_dict, dict) and "actions" in policy_state_dict:
+            actions = policy_state_dict["actions"]
+        else:
+            actions = policy_state_dict
         act_buf = np.ndarray((self.num_envs, ACT_DIM), dtype=np.float32,
                              buffer=self._shm._actions.data)
         act_buf[:] = actions
