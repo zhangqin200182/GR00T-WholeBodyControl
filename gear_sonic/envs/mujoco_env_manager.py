@@ -88,7 +88,7 @@ class EnvSharedMemory:
         }
 
     def read_actions(self):
-        return np.ndarray((self.num_envs, ACT_DIM), dtype=np.float32, buffer=self._actions.data).copy()
+        return self._actions.copy()
 
     def read_rewards(self):
         return np.ndarray(self.num_envs, dtype=np.float32, buffer=self._rewards.data).copy()
@@ -136,9 +136,12 @@ def _worker_loop(worker_id, start_env, num_envs, shm_names, barrier, model_xml, 
                                offset=start_env * OBS_BYTES)
     act_buf = np.ndarray((num_envs, ACT_DIM), dtype=np.float32, buffer=shm._shm["actions"].buf,
                           offset=start_env * ACT_BYTES)
-    rew_buf = np.ndarray(num_envs, dtype=np.float32, buffer=shm._shm["rewards"].buf)
-    done_buf = np.ndarray(num_envs, dtype=np.uint8, buffer=shm._shm["dones"].buf)
-    to_buf = np.ndarray(num_envs, dtype=np.uint8, buffer=shm._shm["timeouts"].buf)
+    rew_buf = np.ndarray(num_envs, dtype=np.float32, buffer=shm._shm["rewards"].buf,
+                          offset=start_env * REW_BYTES)
+    done_buf = np.ndarray(num_envs, dtype=np.uint8, buffer=shm._shm["dones"].buf,
+                          offset=start_env * DONE_BYTES)
+    to_buf = np.ndarray(num_envs, dtype=np.uint8, buffer=shm._shm["timeouts"].buf,
+                        offset=start_env * TIMEOUT_BYTES)
 
     # Create local envs
     envs = [MuJoCoEnv(model_xml, pkl_dir) for _ in range(num_envs)]
@@ -220,18 +223,17 @@ class MuJoCoEnvManager:
 
     def step(self, actions):
         """Trainer-side: distribute actions, wait, return results."""
-        # Write actions
         act_buf = np.ndarray((self.num_envs, ACT_DIM), dtype=np.float32,
                              buffer=self._shm._actions.data)
         act_buf[:] = actions
 
-        # Sync 1: trigger workers
-        self._barrier.wait()
+        try:
+            self._barrier.wait(timeout=self.BARRIER_TIMEOUT)
+            self._barrier.wait(timeout=self.BARRIER_TIMEOUT)
+        except mp.BrokenBarrierError:
+            logger.error("Worker crashed! Discarding current rollout, re-spawning...")
+            self._handle_worker_crash()
 
-        # Sync 2: wait for workers to finish
-        self._barrier.wait()
-
-        # Read results
         obs = self._shm.read_obs()
         rewards = self._shm.read_rewards()
         dones = self._shm.read_dones()
@@ -239,6 +241,23 @@ class MuJoCoEnvManager:
         terminal_obs = self._shm.read_terminal()
 
         return obs, rewards, dones, {"time_outs": timeouts, "terminal_obs": terminal_obs}
+
+    def _handle_worker_crash(self):
+        for p in self._workers:
+            p.terminate()
+            p.join(timeout=5)
+        # Re-spawn (same args)
+        self._workers = []
+        envs_per_worker = math.ceil(self.num_envs / self.num_workers)
+        for i in range(self.num_workers):
+            start = i * envs_per_worker
+            n = min(envs_per_worker, self.num_envs - start)
+            if n > 0:
+                p = mp.Process(target=_worker_loop,
+                    args=(i, start, n, self._shm.names, self._barrier, self.model_xml, self.pkl_dir),
+                    daemon=True)
+                p.start()
+                self._workers.append(p)
 
     def close(self):
         for p in self._workers:
