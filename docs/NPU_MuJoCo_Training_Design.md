@@ -614,3 +614,49 @@ obs_dict, rewards, dones, infos = env.step(actions)
   5. SHM 每 env 固定偏移, 避免动态分配
   6. MotionLib 跨 worker 共享 (mmap), 避免 O(envs) 内存膨胀
 ```
+
+---
+
+## 9. Task 7 实测发现的 action 对齐问题
+
+### 9.1 NPU TensorDict 不兼容
+
+SONIC `Actor.rollout()` 返回 `tensordict._td.TensorDict`，NPU 设备上的 TensorDict 无法直接 `.numpy()`。
+修复：`MuJoCoEnvManager.step()` 中通过 `_to_numpy()` 多级 fallback（`.to("cpu") → .numpy() → 提取 "actions" key → ndarray`）。
+
+### 9.2 Tokenizer Obs 时间对齐
+
+训练时（StubEnv/Isaac Sim）未来帧间隔 `dt_future_ref_frames=0.1s`，10 帧跨度 0.9s。
+MuJoCoEnv 初始实现用 PKL 连续帧采样（30fps，0.033s 间隔），10 帧仅 0.33s，播放速度快了 1.67×。
+修复：引入 `FUTURE_DT_REF=0.1s` 常量，`_future_dof()` 和 `_future_dof_vel()` 按 0.1s 间隔采样。
+
+### 9.3 FK 参考 Body 位姿的根坐标系
+
+`_compute_ref_body_state()` 用 `self.data.qpos[:7]`（机器人当前 root pose）做 FK 的 world frame。
+机器人倒地向后，FK 参考 body 位姿在错误坐标系下计算，tokenizer 中 `vr_3point_local_target` 等字段全部偏移。
+修复：使用 PKL 的 `root_trans_offset` + `root_rot` 作为 FK 的根位姿。
+
+### 9.4 机器人初始姿态与参考不对齐
+
+`reset()` 只设 `qpos[7:] = ref_dof`，`qpos[:7]` 保持 `qpos0`（identity）。
+PKL 首帧 `root_rot` 可能有 ~87° 偏航。
+`motion_anchor_ori_b_mf_nonflat = robot_q⁻¹ × ref_future_q`，identity vs 87° → encoder 从未见过这么大的相对方向差。
+修复：`reset()` 从 PKL 读取 `root_rot` + `root_trans_offset` 设置 `qpos[:7]`。
+
+### 9.5 关节归一化参数不一致
+
+MuJoCoEnv 初始用 MuJoCo XML `jnt_range` 计算 `jm/jh`。
+SONIC checkpoint 用 Isaac Sim WBC config `g1_29dof_sonic_model12.yaml` 的关节限位训练。
+同一 action 映射到不同的关节角目标。
+修复：硬编码 WBC config 的 `jm/jh` 值（29 个关节）。
+
+### 9.6 Pretrained Policy Action 范围超出 [-1, 1]
+
+即使所有修复后，预训练策略的 `act_inference` 输出仍有 50% 超出 [-1, 1]（Isaac Sim 环境端自动 clip）。
+修复：`np.clip(action, -1, 1)` 在 `MuJoCoEnv` 入口处。
+
+### 9.7 残留的 Sim-to-Sim Gap
+
+上述修复后，encoder token std 从 0.90 降至 0.42（目标 zero-token 基线 0.08），但仍存在交替 pattern（部分步 action 合理，部分步极端 [-25, +38]）。
+根因：physics step 后机器人状态漂移，encoder 输入偏离 Isaac Sim 训练分布。模型在 Isaac Sim 上学到的控制策略无法零样本迁移到 MuJoCo 动力学。
+解决的：需要在 MuJoCo 上 fine-tune 若干 iteration 让策略适应新物理。
