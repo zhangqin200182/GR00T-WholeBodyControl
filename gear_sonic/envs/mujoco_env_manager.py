@@ -9,6 +9,7 @@ import multiprocessing as mp
 from multiprocessing.shared_memory import SharedMemory
 from collections import namedtuple
 import numpy as np
+import torch
 
 from gear_sonic.envs.mujoco_env import MuJoCoEnv
 
@@ -223,16 +224,36 @@ class MuJoCoEnvManager:
         # Stub inner env for trainer compatibility (observation_space, config, extras)
         self.env = self._EnvStub()
         self.extras = {}
-        self.config = {"num_envs": num_envs}
+        # config flows from training YAML — set later by trainer.init
 
         logger.info(f"MuJoCoEnvManager: {num_envs} envs × {self._actual_workers} workers")
 
     class _EnvStub:
-        """Minimal stub providing observation_space for trainer init."""
+        """Minimal stub providing observation_space and action_space for trainer init."""
         observation_space = {
             "policy": type("Space", (), {"shape": (930,)})(),
             "critic": type("Space", (), {"shape": (1645,)})(),
         }
+        action_space = type("Space", (), {"shape": (29,)})()
+
+    def reset(self, flatten_dict_obs=False):
+        """reset_all() for trainer compatibility — same as reset."""
+        _ = flatten_dict_obs
+        return {"tokenizer": np.zeros((self.num_envs, 12, 1))}
+
+    def reset_all(self, global_rank=0):
+        """Called by ppo_trainer at start of each rollout."""
+        obs = self._shm.read_obs()
+        return {k: torch.from_numpy(v).float() for k, v in obs.items()}
+
+    # Stub methods for PPO trainer compatibility
+    def set_is_evaluating(self, is_evaluating=True, log_info=False, **kwargs): pass
+    def set_is_training(self): pass
+    def sync_and_compute_adaptive_sampling(self, *args, **kwargs): pass
+    def resample_motion(self): pass
+    def reinit_dr(self): pass
+    def load_env_state_dict(self, state_dict): pass
+    def get_env_state_dict(self): return {}
 
     def step(self, policy_state_dict):
         """Trainer-side: distribute actions, wait, return results.
@@ -266,7 +287,11 @@ class MuJoCoEnvManager:
         timeouts = self._shm.read_timeouts()
         terminal_obs = self._shm.read_terminal()
 
-        return obs, rewards, dones, {"time_outs": timeouts, "terminal_obs": terminal_obs}
+        return {k: torch.from_numpy(v).float() for k, v in obs.items()}, \
+               torch.from_numpy(rewards).float(), \
+               torch.from_numpy(dones).bool(), \
+               {"time_outs": torch.from_numpy(timeouts).bool(),
+                "terminal_obs": {k: torch.from_numpy(v).float() for k, v in terminal_obs.items()} if terminal_obs is not None else None}
 
     def _handle_worker_crash(self):
         for p in self._workers:

@@ -344,6 +344,22 @@ def main(config: OmegaConf):
     env_config.config.save_rendering_dir = str(Path(config.experiment_dir) / "renderings_training")
     env_config.config.experiment_dir = str(Path(config.experiment_dir))
 
+    # SONIC tokenizer observation dimensions (12 sub-fields → 1761D total)
+    TOKENIZER_OBS_DIMS = {
+        "encoder_index": (3,),
+        "command_multi_future_nonflat": (10, 58),
+        "command_z_multi_future_nonflat": (10, 1),
+        "motion_anchor_ori_b_mf_nonflat": (10, 6),
+        "command_multi_future_lower_body": (10, 24),
+        "vr_3point_local_target": (9,),
+        "vr_3point_local_orn_target": (12,),
+        "motion_anchor_ori_b": (6,),
+        "command_z": (1,),
+        "smpl_joints_multi_future_local_nonflat": (10, 24, 3),
+        "smpl_root_ori_b_multi_future": (10, 6),
+        "joint_pos_multi_future_wrist_for_smpl": (10, 6),
+    }
+
     if os.environ.get("SONIC_MUJOCO_ENV"):
         from gear_sonic.envs.mujoco_env_manager import MuJoCoEnvManager
         logger.info("Using MuJoCoEnvManager (CPU physics)")
@@ -353,6 +369,18 @@ def main(config: OmegaConf):
             model_xml="/root/GR00T-WholeBodyControl/gear_sonic_deploy/g1/g1_29dof.xml",
             pkl_dir="/root/GR00T-WholeBodyControl/sample_data/robot_filtered",
         )
+        # Build config with all keys the model init needs
+        config_dict = OmegaConf.to_container(env_config, resolve=True)
+        config_dict.setdefault("obs", {}).setdefault("obs_dims", {})
+        config_dict.setdefault("obs", {})["obs_dict"] = {}
+        config_dict["obs"]["obs_dims"] = {"actor_obs": 930, "critic_obs": 1645, "tokenizer": 1761}
+        config_dict["obs"]["group_obs_dims"] = {"tokenizer": TOKENIZER_OBS_DIMS}
+        config_dict["obs"]["group_obs_names"] = {"tokenizer": list(TOKENIZER_OBS_DIMS.keys())}
+        config_dict.setdefault("robot", {})["actions_dim"] = 29
+        config_dict["num_envs"] = config.num_envs
+        config_dict.setdefault("robot", {}).setdefault("algo_obs_dim_dict", {})
+        # Convert back to OmegaConf — now all keys exist, struct mode is satisfied
+        env.config = OmegaConf.create(config_dict, flags={"allow_objects": True})
     elif _use_stub_env:
         from gear_sonic.envs.stub_env import StubEnv
         logger.info("Using StubEnv (no physics simulation)")
@@ -395,27 +423,21 @@ def main(config: OmegaConf):
         module_dim_dict = getattr(config.algo.config, "module_dim", {})
         policy_backbone_kwargs = {}
         critic_backbone_kwargs = {}
+        # Populate env.config from observation_space (works for Isaac Sim, StubEnv, MuJoCo)
+        env.config["obs"]["obs_dims"]["actor_obs"] = env.env.observation_space["policy"].shape[-1]
+        env.config["obs"]["obs_dims"]["critic_obs"] = env.env.observation_space["critic"].shape[-1]
+        env.config["robot"]["algo_obs_dim_dict"]["actor_obs"] = env.env.observation_space[
+            "policy"
+        ].shape[-1]
+        env.config["robot"]["algo_obs_dim_dict"]["critic_obs"] = env.env.observation_space[
+            "critic"
+        ].shape[-1]
         if os.environ.get("SONIC_MUJOCO_ENV"):
-            # MuJoCo: observation dims are hardcoded (no Isaac Sim observation_space)
-            mujoco_env_config = OmegaConf.create({
-                "obs": {
-                    "obs_dims": {"actor_obs": 930, "critic_obs": 1645, "tokenizer": 1761},
-                    "group_obs_dims": {"tokenizer": 1761},
-                    "group_obs_names": {"tokenizer": ["tokenizer"]},
-                },
-                "robot": {"algo_obs_dim_dict": {"actor_obs": 930, "critic_obs": 1645, "tokenizer": 1761}, "actions_dim": 29},
-                "num_envs": config.num_envs,
-            })
-            env.config = mujoco_env_config
+            # MuJoCo: no group obs (tokenizer is flat 1761D)
+            env.config["obs"]["obs_dims"]["tokenizer"] = 1761
+            env.config["robot"]["algo_obs_dim_dict"]["tokenizer"] = 1761
+            env.config["robot"]["actions_dim"] = 29
         else:
-            env.config["obs"]["obs_dims"]["actor_obs"] = env.env.observation_space["policy"].shape[-1]
-            env.config["obs"]["obs_dims"]["critic_obs"] = env.env.observation_space["critic"].shape[-1]
-            env.config["robot"]["algo_obs_dim_dict"]["actor_obs"] = env.env.observation_space[
-                "policy"
-            ].shape[-1]
-            env.config["robot"]["algo_obs_dim_dict"]["critic_obs"] = env.env.observation_space[
-                "critic"
-            ].shape[-1]
             example_obs = env.reset(flatten_dict_obs=False)
             for key in env.env.observation_space:
                 if key not in ["policy", "critic"]:
