@@ -428,7 +428,14 @@ class MuJoCoEnv:
     # ═══════════════════════════════════════════════════════════════════
     def reset(self):
         self._sample_motion()
-        ref_q0 = self._ref_dof[int(self._ref_time * self._ref_fps)]
+        idx = int(self._ref_time * self._ref_fps)
+        ref_q0 = self._ref_dof[idx]
+        # Set robot root pose to match reference motion's world-frame pose,
+        # so motion_anchor_ori_b_mf_nonflat (robot_quat⁻¹ * ref_quat) stays
+        # in the small-tracking-error regime seen during Isaac Sim training.
+        self.data.qpos[:3] = self._ref_root_trans[idx]
+        pk = self._ref_root_rot[idx]
+        self.data.qpos[3:7] = [pk[3], pk[0], pk[1], pk[2]]  # [x,y,z,w] → [w,x,y,z]
         self.data.qpos[7:] = ref_q0.astype(np.float64); self.data.qvel[:] = 0
         mujoco.mj_forward(self.model, self.data)
         for b in (self._gdh, self._avh, self._jph, self._jvh, self._ah, self._lvh): b.fill(0)
