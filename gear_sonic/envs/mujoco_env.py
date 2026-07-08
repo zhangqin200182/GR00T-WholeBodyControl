@@ -9,6 +9,7 @@ from gear_sonic.envs.mujoco_math import (
 NUM_DOF = 29
 NUM_FUTURE = 10
 NUM_SMPL_FUTURE = 10
+FUTURE_DT_REF = 0.1     # dt_future_ref_frames from StubEnv (seconds between future frames)
 
 BODY_NAMES = (
     "pelvis", "left_hip_roll_link", "left_knee_link", "left_ankle_roll_link",
@@ -106,36 +107,39 @@ class MuJoCoEnv:
         m = self.motions[np.random.randint(len(self.motions))]
         dof = m["dof"]; n = len(dof)
         self._ref_dof = dof
-        self._ref_start = np.random.randint(0, max(1, n - self.max_ep))
-        self._ref_idx = self._ref_start
+        self._ref_root_rot = m["root_rot"].astype(np.float64)       # (T, 4) quat [x,y,z,w]
+        self._ref_root_trans = m["root_trans_offset"].astype(np.float64)  # (T, 3)
+        self._ref_fps = m.get("fps", 30.0)
+        self._ref_dt = 1.0 / self._ref_fps
+        max_time = (n - self.max_ep - 1) * self._ref_dt
+        self._ref_time = np.random.uniform(0, max(0.001, max_time))
 
     def _advance_motion_time(self):
-        self._ref_idx = getattr(self, '_ref_idx', 0) + 1
+        self._ref_time += self.ctrl_dt
 
-    def _current_ref_frame(self):
-        i = min(self._ref_idx, len(self._ref_dof) - 1)
-        return self._ref_dof[i].astype(np.float64)
-
-    def _future_dof(self, field="dof", n=NUM_FUTURE):
-        dof = self._ref_dof; idx = self._ref_idx; end = len(dof)
-        indices = np.clip(np.arange(idx, idx + n), 0, end - 1)
+    def _future_dof(self, field="dof", n=NUM_FUTURE, dt_ref=FUTURE_DT_REF):
+        dof = self._ref_dof; fps = self._ref_fps; end = len(dof)
+        times = self._ref_time + np.arange(n) * dt_ref
+        indices = np.clip((times * fps).astype(int), 0, end - 1)
         return dof[indices].astype(np.float32)
 
-    def _future_dof_vel(self, n=NUM_FUTURE):
-        dof = self._ref_dof; idx = self._ref_idx; end = len(dof)
-        t0 = np.clip(np.arange(idx, idx + n), 0, end - 2)
-        t1 = np.clip(np.arange(idx + 1, idx + n + 1), 1, end - 1)
-        return ((dof[t1] - dof[t0]) / self.ctrl_dt).astype(np.float32)
+    def _future_dof_vel(self, n=NUM_FUTURE, dt_ref=FUTURE_DT_REF):
+        dof = self._ref_dof; fps = self._ref_fps; end = len(dof)
+        times = self._ref_time + np.arange(n) * dt_ref
+        t0 = np.clip((times * fps).astype(int), 0, end - 2)
+        t1 = np.clip(t0 + 1, 0, end - 1)
+        return ((dof[t1] - dof[t0]) / self._ref_dt).astype(np.float32)
 
     # ═══════════════════════════════════════════════════════════════════
     # FK reference body state
     # ═══════════════════════════════════════════════════════════════════
     def _compute_ref_body_state(self):
-        self._ref_data.qpos[7:] = self._current_ref_frame()
-        # Use model's default root pose (standing), NOT robot's current root.
-        # If robot falls, copying self.data.qpos[:7] would put FK ref body
-        # in wrong world frame → tokenizer obs drifts → model explodes.
-        self._ref_data.qpos[:7] = self.model.qpos0[:7]
+        idx = min(int(self._ref_time * self._ref_fps), len(self._ref_dof) - 1)
+        self._ref_data.qpos[7:] = self._ref_dof[idx].astype(np.float64)
+        self._ref_data.qpos[:3] = self._ref_root_trans[idx]
+        # PKL quat is [x,y,z,w] → MuJoCo is [w,x,y,z]
+        pk = self._ref_root_rot[idx]
+        self._ref_data.qpos[3:7] = [pk[3], pk[0], pk[1], pk[2]]
         self._ref_data.qvel[:] = 0
         mujoco.mj_kinematics(self._ref_model, self._ref_data)
 
@@ -155,27 +159,20 @@ class MuJoCoEnv:
         self._compute_ref_body_state()
         return self._ref_data.xquat[self._body_indices].copy()
 
-    def _future_ref_root_pos(self, n=NUM_FUTURE):
-        idx = self._ref_idx; end = len(self._ref_dof)
-        results = []
-        for i in range(n):
-            t = min(idx + i, end - 1)
-            self._ref_data.qpos[7:] = self._ref_dof[t]
-            self._ref_data.qpos[:7] = self.data.qpos[:7]; self._ref_data.qvel[:] = 0
-            mujoco.mj_kinematics(self._ref_model, self._ref_data)
-            results.append(self._ref_data.xpos[self._body_idx["pelvis"]].copy())
-        return np.stack(results, axis=0)
+    def _future_ref_root_pos(self, n=NUM_FUTURE, dt_ref=FUTURE_DT_REF):
+        fps = self._ref_fps; end = len(self._ref_dof)
+        times = self._ref_time + np.arange(n) * dt_ref
+        indices = np.clip((times * fps).astype(int), 0, end - 1)
+        return self._ref_root_trans[indices].astype(np.float32)
 
-    def _future_ref_root_quat(self, n=NUM_FUTURE):
-        idx = self._ref_idx; end = len(self._ref_dof)
-        results = []
-        for i in range(n):
-            t = min(idx + i, end - 1)
-            self._ref_data.qpos[7:] = self._ref_dof[t]
-            self._ref_data.qpos[:7] = self.data.qpos[:7]; self._ref_data.qvel[:] = 0
-            mujoco.mj_kinematics(self._ref_model, self._ref_data)
-            results.append(self._ref_data.xquat[self._body_idx["pelvis"]].copy())
-        return np.stack(results, axis=0)
+    def _future_ref_root_quat(self, n=NUM_FUTURE, dt_ref=FUTURE_DT_REF):
+        fps = self._ref_fps; end = len(self._ref_dof)
+        times = self._ref_time + np.arange(n) * dt_ref
+        indices = np.clip((times * fps).astype(int), 0, end - 1)
+        pk = self._ref_root_rot[indices]                      # (n, 4) [x,y,z,w]
+        ret = np.zeros((n, 4), dtype=np.float32)
+        ret[:, 0] = pk[:, 3]; ret[:, 1:] = pk[:, :3]         # → [w,x,y,z]
+        return ret
 
     # ═══════════════════════════════════════════════════════════════════
     # Physics
@@ -423,7 +420,7 @@ class MuJoCoEnv:
             if np.linalg.norm(ref_aligned - self.data.xpos[self._body_idx[name]]) > 0.2:
                 term = True; break
 
-        trunc = self._ref_idx >= len(self._ref_dof) - 1
+        trunc = int(self._ref_time * self._ref_fps) >= len(self._ref_dof) - 1
         return term, trunc
 
     # ═══════════════════════════════════════════════════════════════════
@@ -431,7 +428,7 @@ class MuJoCoEnv:
     # ═══════════════════════════════════════════════════════════════════
     def reset(self):
         self._sample_motion()
-        ref_q0 = self._ref_dof[self._ref_start]
+        ref_q0 = self._ref_dof[int(self._ref_time * self._ref_fps)]
         self.data.qpos[7:] = ref_q0.astype(np.float64); self.data.qvel[:] = 0
         mujoco.mj_forward(self.model, self.data)
         for b in (self._gdh, self._avh, self._jph, self._jvh, self._ah, self._lvh): b.fill(0)
