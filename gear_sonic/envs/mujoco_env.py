@@ -1,119 +1,436 @@
-"""MuJoCo environment for SONIC training — single env, ISAAC-SIM compatible."""
+"""MuJoCo G1 environment — full SONIC-compatible observation/reward/termination."""
 import os, glob, numpy as np, mujoco, joblib
+from gear_sonic.envs.mujoco_math import (
+    quat_mul, quat_inv, quat_apply, quat_error_magnitude,
+    quat_to_matrix, subtract_frame_transforms, quat_diff_to_angvel,
+)
 
+# ── Constants ──────────────────────────────────────────────────────────
 NUM_DOF = 29
-NUM_FUTURE = 10  # num_future_frames from SONIC config
+NUM_FUTURE = 10
+NUM_SMPL_FUTURE = 10
+
+BODY_NAMES = (
+    "pelvis", "left_hip_roll_link", "left_knee_link", "left_ankle_roll_link",
+    "right_hip_roll_link", "right_knee_link", "right_ankle_roll_link",
+    "torso_link", "left_shoulder_roll_link", "left_elbow_link",
+    "left_wrist_yaw_link", "right_shoulder_roll_link",
+    "right_elbow_link", "right_wrist_yaw_link",
+)
+VR_3POINT_BODY = ("left_wrist_yaw_link", "right_wrist_yaw_link", "torso_link")
+VR_3POINT_OFFSETS = np.array([[0.18, -0.025, 0.0], [0.18, 0.025, 0.0],
+                               [0.0, 0.0, 0.35]], dtype=np.float32)
+LOWER_JOINT_INDICES = list(range(12))
+ACTOR_DIM = 930; CRITIC_DIM = 1645; TOKENIZER_DIM = 1761
+HIST = 10  # history_length
 
 
 class MuJoCoEnv:
-    """Single MuJoCo G1 environment with motion reference tracking."""
+    """Single MuJoCo G1 environment — SONIC-compatible obs/reward/termination."""
 
     def __init__(self, model_xml, pkl_dir, config=None):
+        # ── MuJoCo simulation model ──
         self.model = mujoco.MjModel.from_xml_path(model_xml)
-        self.native_dt = self.model.opt.timestep
-        self.decimation = 10
-        self.ctrl_dt = self.native_dt * self.decimation
         self.data = mujoco.MjData(self.model)
+        # ── FK reference model (independent kinematics) ──
+        self._ref_model = mujoco.MjModel.from_xml_path(model_xml)
+        self._ref_data = mujoco.MjData(self._ref_model)
+        # ── Simulation params ──
+        self.native_dt = self.model.opt.timestep   # 0.002
+        self.decimation = 10; self.ctrl_dt = self.native_dt * self.decimation
+        # ── Action space ──
         self.nu = self.model.nu
         jr = self.model.jnt_range[1:]
-        self.jm = (jr[:, 1] + jr[:, 0]) / 2
-        self.jh = (jr[:, 1] - jr[:, 0]) / 2
-        self._ah = np.zeros((1, 10, self.nu), dtype=np.float32)
-        self._jph = np.zeros((1, 10, self.nu), dtype=np.float32)
-        self._jvh = np.zeros((1, 10, self.nu), dtype=np.float32)
-        self._gdh = np.zeros((1, 10, 3), dtype=np.float32)
-        self._avh = np.zeros((1, 10, 3), dtype=np.float32)
+        self.jm = (jr[:,1] + jr[:,0]) / 2; self.jh = (jr[:,1] - jr[:,0]) / 2
+        # ── PD gains ──
+        self.kp = np.ones(self.nu) * 30.0; self.kd = np.ones(self.nu) * 3.0
+        # ── Body indices ──
+        self._body_idx = {n: mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, n) for n in BODY_NAMES}
+        self._body_indices = np.array([self._body_idx[n] for n in BODY_NAMES])
+        # ── Episode ──
         self.ep = 0
         self.max_ep = getattr(config, "max_episode_length", 500) if config else 500
-        self.kp = np.ones(self.nu) * 30.0
-        self.kd = np.ones(self.nu) * 3.0
-        # Load motion data
-        self.motions = []
-        for p in sorted(glob.glob(os.path.join(pkl_dir, "**/*.pkl"), recursive=True)):
-            if os.path.basename(p).startswith("._"):
-                continue
-            data = joblib.load(p)
-            for v in data.values():
-                if isinstance(v, dict) and "dof" in v:
-                    self.motions.append(v)
+        # ── Motions ──
+        self.motions = self._load_motions(pkl_dir)
+        # ── History buffers ──
+        self._init_history()
+        # ── Prev frame cache ──
+        self._prev_action = np.zeros(self.nu, dtype=np.float32)
+        self._prev_root_pos = np.zeros(3, dtype=np.float64)
+        self._prev_body_pos = np.zeros((14, 3), dtype=np.float64)
+        self._prev_body_quat = np.zeros((14, 4), dtype=np.float64)
+        self._prev_ref_body_pos = np.zeros((14, 3), dtype=np.float64)
+        self._prev_ref_body_quat = np.zeros((14, 4), dtype=np.float64)
+        self._prev_joint_vel = np.zeros(self.nu, dtype=np.float64)
 
-    def reset(self):
+    # ═══════════════════════════════════════════════════════════════════
+    # Motion loading
+    # ═══════════════════════════════════════════════════════════════════
+    def _load_motions(self, pkl_dir):
+        motions = []
+        for p in sorted(glob.glob(os.path.join(pkl_dir, "**/*.pkl"), recursive=True)):
+            if os.path.basename(p).startswith("._"): continue
+            for v in joblib.load(p).values():
+                if isinstance(v, dict) and "dof" in v: motions.append(v)
+        if not motions: raise RuntimeError(f"No motion PKLs in {pkl_dir}")
+        return motions
+
+    def _sample_motion(self):
         m = self.motions[np.random.randint(len(self.motions))]
-        dof = m["dof"]
-        start = np.random.randint(0, max(1, len(dof) - self.max_ep))
+        dof = m["dof"]; n = len(dof)
         self._ref_dof = dof
-        self._ref_start = start
-        self._ref_idx = start
-        self.data.qpos[7:] = dof[start].astype(np.float64)
-        self.data.qvel[:] = 0
+        self._ref_start = np.random.randint(0, max(1, n - self.max_ep))
+        self._ref_idx = self._ref_start
+
+    def _advance_motion_time(self):
+        self._ref_idx = getattr(self, '_ref_idx', 0) + 1
+
+    def _current_ref_frame(self):
+        i = min(self._ref_idx, len(self._ref_dof) - 1)
+        return self._ref_dof[i].astype(np.float64)
+
+    def _future_dof(self, field="dof", n=NUM_FUTURE):
+        dof = self._ref_dof; idx = self._ref_idx; end = len(dof)
+        indices = np.clip(np.arange(idx, idx + n), 0, end - 1)
+        return dof[indices].astype(np.float32)
+
+    def _future_dof_vel(self, n=NUM_FUTURE):
+        dof = self._ref_dof; idx = self._ref_idx; end = len(dof)
+        t0 = np.clip(np.arange(idx, idx + n), 0, end - 2)
+        t1 = np.clip(np.arange(idx + 1, idx + n + 1), 1, end - 1)
+        return ((dof[t1] - dof[t0]) / self.ctrl_dt).astype(np.float32)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # FK reference body state
+    # ═══════════════════════════════════════════════════════════════════
+    def _compute_ref_body_state(self):
+        self._ref_data.qpos[7:] = self._current_ref_frame()
+        self._ref_data.qpos[:7] = self.data.qpos[:7]
+        self._ref_data.qvel[:] = 0
+        mujoco.mj_kinematics(self._ref_model, self._ref_data)
+
+    def _ref_root_pos(self):
+        self._compute_ref_body_state()
+        return self._ref_data.xpos[self._body_idx["pelvis"]].copy()
+
+    def _ref_root_quat(self):
+        self._compute_ref_body_state()
+        return self._ref_data.xquat[self._body_idx["pelvis"]].copy()
+
+    def _ref_body_pos(self):
+        self._compute_ref_body_state()
+        return self._ref_data.xpos[self._body_indices].copy()
+
+    def _ref_body_quat(self):
+        self._compute_ref_body_state()
+        return self._ref_data.xquat[self._body_indices].copy()
+
+    def _future_ref_root_pos(self, n=NUM_FUTURE):
+        idx = self._ref_idx; end = len(self._ref_dof)
+        results = []
+        for i in range(n):
+            t = min(idx + i, end - 1)
+            self._ref_data.qpos[7:] = self._ref_dof[t]
+            self._ref_data.qpos[:7] = self.data.qpos[:7]; self._ref_data.qvel[:] = 0
+            mujoco.mj_kinematics(self._ref_model, self._ref_data)
+            results.append(self._ref_data.xpos[self._body_idx["pelvis"]].copy())
+        return np.stack(results, axis=0)
+
+    def _future_ref_root_quat(self, n=NUM_FUTURE):
+        idx = self._ref_idx; end = len(self._ref_dof)
+        results = []
+        for i in range(n):
+            t = min(idx + i, end - 1)
+            self._ref_data.qpos[7:] = self._ref_dof[t]
+            self._ref_data.qpos[:7] = self.data.qpos[:7]; self._ref_data.qvel[:] = 0
+            mujoco.mj_kinematics(self._ref_model, self._ref_data)
+            results.append(self._ref_data.xquat[self._body_idx["pelvis"]].copy())
+        return np.stack(results, axis=0)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Physics
+    # ═══════════════════════════════════════════════════════════════════
+    def _pd_control(self, action):
+        target = action * self.jh + self.jm
+        torque = self.kp * (target - self.data.qpos[7:]) - self.kd * self.data.qvel[6:]
+        self.data.ctrl[:] = np.clip(torque, -50, 50)
+
+    def _physics_step(self):
+        for _ in range(self.decimation): mujoco.mj_step(self.model, self.data)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # History buffers
+    # ═══════════════════════════════════════════════════════════════════
+    def _init_history(self):
+        self._gdh = np.zeros((HIST, 3), dtype=np.float32)
+        self._avh = np.zeros((HIST, 3), dtype=np.float32)
+        self._jph = np.zeros((HIST, self.nu), dtype=np.float32)
+        self._jvh = np.zeros((HIST, self.nu), dtype=np.float32)
+        self._ah  = np.zeros((HIST, self.nu), dtype=np.float32)
+        self._lvh = np.zeros((HIST, 3), dtype=np.float32)
+
+    def _shift_histories(self):
+        for b in [self._gdh, self._avh, self._jph, self._jvh, self._lvh]:
+            b[:-1] = b[1:]
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Observations
+    # ═══════════════════════════════════════════════════════════════════
+    def _obs(self):
+        return {"actor_obs": self._compute_actor_obs(),
+                "critic_obs": self._compute_critic_obs(),
+                "tokenizer": self._build_tokenizer()}
+
+    def _compute_actor_obs(self):
+        root_quat = self.data.xquat[self._body_idx["pelvis"]]
+        g_body = quat_apply(quat_inv(root_quat), np.array([0, 0, -1]))
+        ang_vel = self.data.qvel[3:6].copy()
+        jpos = self.data.qpos[7:].copy(); jvel = self.data.qvel[6:].copy()
+        self._shift_histories()
+        self._gdh[-1] = g_body; self._avh[-1] = ang_vel
+        self._jph[-1] = jpos; self._jvh[-1] = jvel
+        return np.concatenate([b.flatten() for b in [self._gdh, self._avh, self._jph, self._jvh, self._ah]]).astype(np.float32)
+
+    def _compute_critic_obs(self):
+        root_pos = self.data.xpos[self._body_idx["pelvis"]]
+        root_quat = self.data.xquat[self._body_idx["pelvis"]]
+        ref_root_pos = self._ref_root_pos(); ref_root_quat = self._ref_root_quat()
+
+        future_pos = self._future_dof(); future_vel = self._future_dof_vel()
+        cmd_mf = np.concatenate([future_pos.flatten(), future_vel.flatten()])  # 580
+        # anchor pos/ori in robot frame
+        pos_b, ori_b = subtract_frame_transforms(root_pos, root_quat, ref_root_pos, ref_root_quat)
+        mat = quat_to_matrix(ori_b); ori_6d = mat[..., :2].flatten()  # 6
+        # body pos in robot frame
+        body_pos_w = self.data.xpos[self._body_indices]
+        body_pos_b = quat_apply(quat_inv(root_quat), body_pos_w - root_pos).flatten()  # 42
+        # body ori in robot frame (6D)
+        body_quat_w = self.data.xquat[self._body_indices]
+        body_quat_b = quat_mul(np.tile(quat_inv(root_quat), (14, 1)), body_quat_w)
+        ori_parts = [quat_to_matrix(q)[:2].flatten() for q in body_quat_b]
+        body_ori_flat = np.concatenate(ori_parts)  # 84
+        # lin vel history
+        lin_vel = (root_pos - self._prev_root_pos) / self.ctrl_dt
+        self._lvh[-1] = lin_vel; self._prev_root_pos = root_pos.copy()
+
+        parts = [cmd_mf, pos_b.flatten(), ori_6d, body_pos_b, body_ori_flat] + \
+                [b.flatten() for b in [self._lvh, self._avh, self._jph, self._jvh, self._ah]]
+        return np.concatenate(parts).astype(np.float32)
+
+    def _build_tokenizer(self):
+        root_quat = self.data.xquat[self._body_idx["pelvis"]]
+        ref_root_pos = self._ref_root_pos(); ref_root_quat = self._ref_root_quat()
+
+        future_pos = self._future_dof(); future_vel = self._future_dof_vel()
+        cmd_nonflat = np.concatenate([future_pos, future_vel], axis=-1).flatten()  # 580
+        future_rp = self._future_ref_root_pos(); cmd_z_mf = future_rp[:, 2:3].flatten()  # 10
+        future_rq = self._future_ref_root_quat()
+        root_q_e = np.tile(root_quat, (NUM_FUTURE, 1))
+        rot_diff = quat_mul(quat_inv(root_q_e), future_rq)
+        ori_mf = np.stack([quat_to_matrix(q) for q in rot_diff])[:, :2, :].flatten()  # 60
+        lower_pos = future_pos[:, LOWER_JOINT_INDICES]; lower_vel = future_vel[:, LOWER_JOINT_INDICES]
+        cmd_lower = np.concatenate([lower_pos.flatten(), lower_vel.flatten()])  # 240
+
+        # VR 3-point
+        ref_body_pos = self._ref_body_pos(); ref_body_quat = self._ref_body_quat()
+        vr_idx = [list(BODY_NAMES).index(n) for n in VR_3POINT_BODY]
+        vr_pos = ref_body_pos[vr_idx]; vr_quat = ref_body_quat[vr_idx]
+        vr_w = vr_pos + quat_apply(vr_quat, VR_3POINT_OFFSETS)
+        ref_rq_3p = np.tile(ref_root_quat, (3, 1))
+        vr_local = quat_apply(quat_inv(ref_rq_3p), vr_w - ref_root_pos).flatten()  # 9
+        vr_orn = quat_mul(quat_inv(ref_rq_3p), vr_quat).flatten()  # 12
+
+        # Single-frame anchor ori
+        _, ori_b = subtract_frame_transforms(
+            self.data.xpos[self._body_idx["pelvis"]], root_quat, ref_root_pos, ref_root_quat)
+        mat_s = quat_to_matrix(ori_b); ori_b_6d = mat_s[..., :2].flatten()  # 6
+        cmd_z = np.array([ref_root_pos[2]], dtype=np.float32)  # 1
+
+        # Encoder index + SMPL (zeros)
+        enc_idx = np.zeros(3, dtype=np.float32); enc_idx[0] = 1.0  # g1
+        smpl_j = np.zeros(NUM_SMPL_FUTURE * 24 * 3, dtype=np.float32)   # 720
+        smpl_o = np.zeros(NUM_SMPL_FUTURE * 6, dtype=np.float32)        # 60
+        smpl_w = np.zeros(NUM_SMPL_FUTURE * 6, dtype=np.float32)        # 60
+
+        return np.concatenate([enc_idx, cmd_nonflat, cmd_z_mf, ori_mf, cmd_lower,
+                               vr_local, vr_orn, ori_b_6d, cmd_z,
+                               smpl_j, smpl_o, smpl_w]).astype(np.float32)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Reward
+    # ═══════════════════════════════════════════════════════════════════
+    def _compute_reward(self, action):
+        root_pos = self.data.xpos[self._body_idx["pelvis"]]
+        root_quat = self.data.xquat[self._body_idx["pelvis"]]
+        ref_root_pos = self._ref_root_pos(); ref_root_quat = self._ref_root_quat()
+
+        # 1. tracking_anchor_pos (w=0.5, σ=0.3)
+        err = np.linalg.norm(root_pos - ref_root_pos)
+        r1 = 0.5 * np.exp(-err**2 / 0.09)
+        # 2. tracking_anchor_ori (w=0.5, σ=0.4)
+        r2 = 0.5 * np.exp(-quat_error_magnitude(ref_root_quat, root_quat)**2 / 0.16)
+        # 3. tracking_relative_body_pos (w=1.0, σ=0.3)
+        ref_body_pos = self._ref_body_pos()
+        ref_aligned = ref_body_pos - ref_root_pos + root_pos
+        body_pos_w = self.data.xpos[self._body_indices]
+        r3 = 1.0 * np.exp(-np.sum((body_pos_w - ref_aligned)**2, axis=-1).mean() / 0.09)
+        # 4. tracking_relative_body_ori (w=1.0, σ=0.4)
+        ref_body_quat = self._ref_body_quat()
+        body_quat_w = self.data.xquat[self._body_indices]
+        ang_errs = np.array([quat_error_magnitude(ref_body_quat[i], body_quat_w[i]) for i in range(14)])
+        r4 = 1.0 * np.exp(-(ang_errs**2).mean() / 0.16)
+        # 5. tracking_body_linvel (w=1.0, σ=1.0)
+        body_lin_vel = (body_pos_w - self._prev_body_pos) / self.ctrl_dt
+        ref_lin_vel = (ref_body_pos - self._prev_ref_body_pos) / self.ctrl_dt
+        r5 = 1.0 * np.exp(-np.sum((body_lin_vel - ref_lin_vel)**2, axis=-1).mean() / 1.0)
+        self._prev_body_pos = body_pos_w.copy(); self._prev_ref_body_pos = ref_body_pos.copy()
+        # 6. tracking_body_angvel (w=1.0, σ=3.14)
+        body_ang_vel = quat_diff_to_angvel(self._prev_body_quat, body_quat_w, self.ctrl_dt)
+        ref_ang_vel = quat_diff_to_angvel(self._prev_ref_body_quat, ref_body_quat, self.ctrl_dt)
+        r6 = 1.0 * np.exp(-np.sum((body_ang_vel - ref_ang_vel)**2, axis=-1).mean() / 9.86)
+        self._prev_body_quat = body_quat_w.copy(); self._prev_ref_body_quat = ref_body_quat.copy()
+        # 7. action_rate_l2 (w=-0.1)
+        r7 = -0.1 * np.sum((action - self._prev_action)**2); self._prev_action = action.copy()
+        # 8. joint_limit (w=-10.0)
+        q = self.data.qpos[7:]
+        r8 = -10.0 * np.sum(np.maximum(np.abs(q - self.jm) - self.jh, 0))
+        # 9. undesired_contacts (w=-0.1)
+        r9 = -0.1 * self._undesired_contact()
+        # 10. anti_shake (w=-0.005)
+        r10 = -0.005 * self._anti_shake()
+        # 11. tracking_vr_local (w=2.0, σ=0.1)
+        r11 = 2.0 * self._vr_local_error()
+        # 12. feet_acc (w=-2.5e-6)
+        r12 = -2.5e-6 * self._feet_acc()
+
+        return float(r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8 + r9 + r10 + r11 + r12)
+
+    def _undesired_contact(self):
+        excluded = {"left_ankle_roll_link", "right_ankle_roll_link",
+                    "left_wrist_yaw_link", "right_wrist_yaw_link",
+                    "left_elbow_link", "right_elbow_link"}
+        total = 0.0
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            b1 = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, self.model.geom_bodyid[c.geom1])
+            b2 = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, self.model.geom_bodyid[c.geom2])
+            if b1 not in excluded and b2 not in excluded:
+                force = np.zeros(6); mujoco.mj_contactForce(self.model, self.data, i, force)
+                total += np.linalg.norm(force[:3])
+        return max(total - 1.0, 0.0)
+
+    def _anti_shake(self):
+        target = ("left_wrist_yaw_link", "right_wrist_yaw_link", "head_link")
+        excesses = []
+        for name in target:
+            idx = self._body_idx.get(name)
+            if idx is None: continue
+            dof_adr = self.model.body_dofadr[idx]
+            if dof_adr < 0: continue
+            w = self.data.cvel[dof_adr + 3: dof_adr + 6]
+            excesses.append(max(np.linalg.norm(w) - 1.5, 0))
+        return float(np.mean(np.array(excesses)**2)) if excesses else 0.0
+
+    def _vr_local_error(self):
+        pt_bodies = ("torso_link", "left_wrist_yaw_link", "right_wrist_yaw_link")
+        pt_offsets = np.array([[0, 0, 0.5], [0, 0, 0], [0, 0, 0]], dtype=np.float64)
+        n_pts = len(pt_bodies)
+
+        ref_root_pos = self._ref_root_pos(); ref_root_quat = self._ref_root_quat()
+        ref_body_pos = self._ref_body_pos(); ref_body_quat = self._ref_body_quat()
+        ref_idx = [list(BODY_NAMES).index(n) for n in pt_bodies]
+        ref_pt_w = ref_body_pos[ref_idx] + quat_apply(ref_body_quat[ref_idx], pt_offsets)
+        ref_local = quat_apply(quat_inv(np.tile(ref_root_quat, (n_pts, 1))), ref_pt_w - ref_root_pos)
+
+        root_pos = self.data.xpos[self._body_idx["pelvis"]]
+        root_quat = self.data.xquat[self._body_idx["pelvis"]]
+        rob_idx = [self._body_idx[n] for n in pt_bodies]
+        rob_pt_w = self.data.xpos[rob_idx] + quat_apply(self.data.xquat[rob_idx], pt_offsets)
+        rob_local = quat_apply(quat_inv(np.tile(root_quat, (n_pts, 1))), rob_pt_w - root_pos)
+
+        err = np.sum((rob_local - ref_local)**2)
+        return float(np.exp(-err / (n_pts * 0.01)))  # σ²=0.01
+
+    def _feet_acc(self):
+        ankle_names = ("left_ankle_pitch_joint", "left_ankle_roll_joint",
+                       "right_ankle_pitch_joint", "right_ankle_roll_joint")
+        indices = []
+        for name in ankle_names:
+            try:
+                jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
+                dadr = self.model.jnt_dofadr[jid]
+                if dadr >= 6: indices.append(dadr - 6)
+            except Exception: pass
+        if not indices: return 0.0
+        ankle_vel = self.data.qvel[6:][indices]
+        acc = (ankle_vel - self._prev_joint_vel[indices]) / self.ctrl_dt
+        self._prev_joint_vel = self.data.qvel[6:].copy()
+        return float(np.sum(acc**2))
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Termination
+    # ═══════════════════════════════════════════════════════════════════
+    def _check_termination(self):
+        ref_root_pos = self._ref_root_pos(); ref_root_quat = self._ref_root_quat()
+        root_pos = self.data.xpos[self._body_idx["pelvis"]]
+        root_quat = self.data.xquat[self._body_idx["pelvis"]]
+        ref_h = ref_root_pos[2]; root_h = root_pos[2]
+        term = False; h_thresh = 0.75 if ref_h < 0.5 else 0.15
+
+        if abs(ref_h - root_h) > h_thresh: term = True
+        if quat_error_magnitude(ref_root_quat, root_quat)**2 > 0.2: term = True
+
+        ref_body_pos = self._ref_body_pos()
+        for name in ("left_ankle_roll_link", "right_ankle_roll_link",
+                     "left_wrist_yaw_link", "right_wrist_yaw_link"):
+            idx = list(BODY_NAMES).index(name)
+            if abs(ref_body_pos[idx, 2] - self.data.xpos[self._body_idx[name]][2]) > h_thresh:
+                term = True; break
+
+        for name in ("left_ankle_roll_link", "right_ankle_roll_link"):
+            idx = list(BODY_NAMES).index(name)
+            ref_aligned = ref_body_pos[idx] - ref_root_pos + root_pos
+            if np.linalg.norm(ref_aligned - self.data.xpos[self._body_idx[name]]) > 0.2:
+                term = True; break
+
+        trunc = self._ref_idx >= len(self._ref_dof) - 1
+        return term, trunc
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Lifecycle
+    # ═══════════════════════════════════════════════════════════════════
+    def reset(self):
+        self._sample_motion()
+        ref_q0 = self._ref_dof[self._ref_start]
+        self.data.qpos[7:] = ref_q0.astype(np.float64); self.data.qvel[:] = 0
         mujoco.mj_forward(self.model, self.data)
+        for b in (self._gdh, self._avh, self._jph, self._jvh, self._ah, self._lvh): b.fill(0)
+        self._prev_action.fill(0)
+        self._prev_root_pos = self.data.xpos[self._body_idx["pelvis"]].copy()
+        self._prev_body_pos = self.data.xpos[self._body_indices].copy()
+        self._prev_body_quat = self.data.xquat[self._body_indices].copy()
+        self._prev_ref_body_pos = self._prev_body_pos.copy()
+        self._prev_ref_body_quat = self._prev_body_quat.copy()
+        self._prev_joint_vel = self.data.qvel[6:].copy()
         self.ep = 0
-        for b in [self._ah, self._jph, self._jvh, self._gdh, self._avh]:
-            b.fill(0)
+        self._compute_ref_body_state()
         return self._obs()
 
     def step(self, action):
-        if len(action.shape) == 2:
-            action = action[0]
-        action = np.clip(action, -1, 1)
-        target = action * self.jh + self.jm
-        for _ in range(self.decimation):
-            t = self.kp * (target - self.data.qpos[7:]) - self.kd * self.data.qvel[6:]
-            self.data.ctrl[:] = np.clip(t, -50, 50)
-            mujoco.mj_step(self.model, self.data)
-        self.ep += 1
-        self._ref_idx = getattr(self, "_ref_idx", 0) + 1
-        self._ah[:, :-1] = self._ah[:, 1:]; self._ah[:, -1] = action
-        self._jph[:, :-1] = self._jph[:, 1:]; self._jph[:, -1] = self.data.qpos[7:]
-        self._jvh[:, :-1] = self._jvh[:, 1:]; self._jvh[:, -1] = self.data.qvel[6:]
-        self._gdh[:, :-1] = self._gdh[:, 1:]; self._gdh[:, -1] = [0, 0, -1]
-        self._avh[:, :-1] = self._avh[:, 1:]; self._avh[:, -1] = self.data.qvel[3:6]
+        if action.ndim == 2: action = action[0]
+        action = np.clip(action, -1, 1).astype(np.float64)
+        # Update action history before PD
+        self._ah[:-1] = self._ah[1:]; self._ah[-1] = action
+        self._pd_control(action); self._physics_step()
+        self._advance_motion_time()
+        self._compute_ref_body_state()
         obs = self._obs()
-        ref = self._ref_dof[min(self._ref_idx, len(self._ref_dof) - 1)]
-        r = float(-np.sum((self.data.qpos[7:] - ref) ** 2) * 0.01 + 0.1)
-        term = self.data.xpos[1][2] < 0.3
-        trunc = self.ep >= self.max_ep
-        done = term or trunc
-        tobs = obs.copy() if done else None
+        reward = self._compute_reward(action)
+        terminated, truncated = self._check_termination()
+        done = terminated or truncated
+        self.ep += 1
+        terminal_obs = None
         if done:
+            terminal_obs = {k: v.copy() for k, v in obs.items()}
             obs = self.reset()
-        return obs, r, done, {"time_outs": trunc, "terminal_obs": tobs}
-
-    # ---- Observation helpers ----
-    def _future_dof(self):
-        """Get future NUM_FUTURE frames from motion reference."""
-        idx = self._ref_idx
-        dof = self._ref_dof
-        n = len(dof)
-        indices = np.clip(np.arange(idx, idx + NUM_FUTURE), 0, n - 1)
-        return dof[indices].astype(np.float32)  # (10, 29)
-
-    def _obs(self):
-        actor = np.concatenate([
-            self._jph.flatten(), self._jvh.flatten(),
-            self._gdh.flatten(), self._avh.flatten(), self._ah.flatten(),
-        ]).astype(np.float32)  # 930
-
-        # Critic obs: actor + motion reference targets + contact placeholder
-        future_dof = self._future_dof()  # (10, 29)
-        motion_targets = np.concatenate([future_dof.flatten(), np.zeros(17 + 700, dtype=np.float32)])
-        critic = np.concatenate([actor, motion_targets[:715]]).astype(np.float32)  # 1645
-
-        # Tokenizer obs: minimal encoder input from motion reference
-        tokenizer = self._build_tokenizer(actor).astype(np.float32)  # 1761
-
-        return {"actor_obs": actor, "critic_obs": critic, "tokenizer": tokenizer}
-
-    def _build_tokenizer(self, actor):
-        """Minimal tokenizer obs for encoder compatibility.
-        Key field: command_multi_future_nonflat (flat joints ×NUM_FUTURE frames).
-        """
-        future = self._future_dof()  # (10, 29)
-        # command_multi_future_nonflat: joints + zero velocity → (10, 58)
-        cmd_future = np.concatenate([future, np.zeros_like(future)], axis=-1).flatten()  # 580
-        # Pad to 1761 total
-        result = np.zeros(1761, dtype=np.float32)
-        result[:580] = cmd_future
-        # encoder_index: random g1/teleop/smpl (uniform for now)
-        result[580] = np.random.randint(3)
-        return result
+        return obs, reward, done, {"time_outs": truncated, "terminal_obs": terminal_obs}
