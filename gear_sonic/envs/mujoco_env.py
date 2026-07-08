@@ -39,9 +39,24 @@ class MuJoCoEnv:
         self.native_dt = self.model.opt.timestep   # 0.002
         self.decimation = 10; self.ctrl_dt = self.native_dt * self.decimation
         # ── Action space ──
+        # Use Isaac Sim joint limits (from WBC config g1_29dof_sonic_model12.yaml),
+        # not MuJoCo XML jnt_range.  Pretrained SONIC policy learned actions under
+        # Isaac Sim normalization; mismatched jm/jh maps actions to wrong joint angles.
         self.nu = self.model.nu
-        jr = self.model.jnt_range[1:]
-        self.jm = (jr[:,1] + jr[:,0]) / 2; self.jh = (jr[:,1] - jr[:,0]) / 2
+        self.jm = np.array([
+             0.1745,  1.2217,  0.0000,  1.3963, -0.1745,  0.0000,   # left  leg
+             0.1745, -1.2217,  0.0000,  1.3963, -0.1745,  0.0000,   # right leg
+             0.0000,  0.0000,  0.0000,                                # waist
+            -0.2094,  0.3317,  0.0000,  0.5236,  0.0000,  0.0000,  0.0000,  # left  arm
+            -0.2094, -0.3317,  0.0000,  0.5236,  0.0000,  0.0000,  0.0000,  # right arm
+        ], dtype=np.float64)
+        self.jh = np.array([
+            2.7052, 1.7453, 2.7576, 1.4835, 0.6981, 0.2618,  # left  leg
+            2.7052, 1.7453, 2.7576, 1.4835, 0.6981, 0.2618,  # right leg
+            2.6180, 0.5200, 0.5200,                            # waist
+            2.8798, 1.9199, 2.6180, 1.5708, 1.9722, 1.6144, 1.6144,  # left  arm
+            2.8798, 1.9199, 2.6180, 1.5708, 1.9722, 1.6144, 1.6144,  # right arm
+        ], dtype=np.float64)
         # ── PD gains ──
         self.kp = np.ones(self.nu) * 100.0; self.kd = np.ones(self.nu) * 5.0
         # ── Per-joint torque limits ──
@@ -117,7 +132,10 @@ class MuJoCoEnv:
     # ═══════════════════════════════════════════════════════════════════
     def _compute_ref_body_state(self):
         self._ref_data.qpos[7:] = self._current_ref_frame()
-        self._ref_data.qpos[:7] = self.data.qpos[:7]
+        # Use model's default root pose (standing), NOT robot's current root.
+        # If robot falls, copying self.data.qpos[:7] would put FK ref body
+        # in wrong world frame → tokenizer obs drifts → model explodes.
+        self._ref_data.qpos[:7] = self.model.qpos0[:7]
         self._ref_data.qvel[:] = 0
         mujoco.mj_kinematics(self._ref_model, self._ref_data)
 

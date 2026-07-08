@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
-"""Task 7: MuJoCoEnvManager + SONIC checkpoint + PPO training (single NPU POC)."""
-import sys, os, time, logging, copy
+"""SONIC 37M model inference in MuJoCoEnv — stability validation.
+
+Loads the pretrained checkpoint, runs deterministic inference (act_inference),
+and measures episode length, term_rate, and mean reward.
+"""
+import sys, os, time, logging
 import numpy as np
-import torch; import torch.nn as nn
+import torch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from omegaconf import OmegaConf
-
-# Patch TRL for checkpoint loading
+# Patch for SONIC release checkpoint
 import trl.trainer.utils
 class OnlineTrainerState: pass
 trl.trainer.utils.OnlineTrainerState = OnlineTrainerState
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from omegaconf import OmegaConf
+
 from gear_sonic.envs.mujoco_env_manager import MuJoCoEnvManager
 from gear_sonic.envs.mujoco_env import NUM_DOF
-from gear_sonic.trl.modules.universal_token_modules import UniversalTokenModule
-from gear_sonic.trl.modules.actor_critic_modules import Actor, Critic
+from gear_sonic.trl.utils.common import custom_instantiate
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,72 +26,232 @@ logger = logging.getLogger(__name__)
 XML = "/root/GR00T-WholeBodyControl/gear_sonic_deploy/g1/g1_29dof.xml"
 PKL = "/root/GR00T-WholeBodyControl/sample_data/robot_filtered"
 CKPT = "/root/sonic-data/sonic_release/last.pt"
-CONFIG = "/root/GR00T-WholeBodyControl/gear_sonic/config/exp/manager/universal_token/all_modes/sonic_release.yaml"
+
+TOKENIZER_OBS_DIMS = {
+    "encoder_index": (3,),
+    "command_multi_future_nonflat": (10, 58),
+    "command_z_multi_future_nonflat": (10, 1),
+    "motion_anchor_ori_b_mf_nonflat": (10, 6),
+    "command_multi_future_lower_body": (240,),
+    "vr_3point_local_target": (9,),
+    "vr_3point_local_orn_target": (12,),
+    "motion_anchor_ori_b": (6,),
+    "command_z": (1,),
+    "smpl_joints_multi_future_local_nonflat": (10, 72),
+    "smpl_root_ori_b_multi_future": (10, 6),
+    "joint_pos_multi_future_wrist_for_smpl": (10, 6),
+}
 
 
-def build_model(cfg, device="cpu"):
-    """Build SONIC 37M model from config."""
-    # Actor backbone
-    utm = UniversalTokenModule(
-        obs_dim_dict=cfg.actor.obs_dim_dict,
-        encoder_configs=cfg.actor.backbone.encoders,
-        decoder_configs=cfg.actor.backbone.decoders,
-        quantizer_config=cfg.actor.backbone.quantizer,
-        obs_config=cfg.actor.backbone,
-        device=device,
-    )
-    actor = Actor(utm, num_actions=NUM_DOF, init_noise_std=0.05)
-    critic = Critic(obs_dim=1645, device=device)
-    return actor, critic
+def build_model(device="cpu"):
+    """Build SONIC 37M Actor + Critic from a manually-resolved config.
 
-
-def main():
-    num_envs = 16; num_steps = 8; num_iters = 10; lr = 1e-4
-    logger.info(f"Task 7: MuJoCoEnvManager + SONIC ({num_envs}e × {num_steps}s × {num_iters}i)")
-
-    # Build env
-    env = MuJoCoEnvManager(num_envs=num_envs, num_workers=2, model_xml=XML, pkl_dir=PKL)
-
-    # Build config stub
-    cfg = OmegaConf.create({
+    Matches the architecture in ``config/actor_critic/universal_token/all_mlp_v1.yaml``
+    with the stub_train overrides (command_z_multi_future_nonflat dropped from g1 inputs,
+    joint_pos_multi_future_wrist_for_smpl added to smpl inputs).
+    """
+    algo_cfg = OmegaConf.create({
+        "init_noise_std": 0.05,
+        "use_log_std": False,
+        "use_clampped_std": True,
+        "std_clamp_min": 0.001,
+        "std_clamp_max": 0.5,
         "actor": {
-            "obs_dim_dict": {"actor_obs": 930, "critic_obs": 1645, "tokenizer": 1761},
+            "_target_": "gear_sonic.trl.modules.actor_critic_modules.Actor",
+            "running_mean_std": False,
+            "input_obs_dict": True,
+            "has_aux_loss": False,
             "backbone": {
+                "_target_": "gear_sonic.trl.modules.universal_token_modules.UniversalTokenModule",
+                "num_future_frames": 10,
+                "proprioception_features": ["actor_obs"],
+                "num_fsq_levels": 32,
+                "fsq_level_list": 32,
+                "max_num_tokens": 2,
+                "quantizer": None,
                 "encoders": {
-                    "g1": {"type": "mlp", "hidden_dims": [2048, 1024, 512, 512], "input_features": ["command_multi_future_nonflat", "motion_anchor_ori_b_mf_nonflat"], "num_output_temporal_dims": 2},
+                    "g1": {
+                        "inputs": [
+                            "command_multi_future_nonflat",
+                            "motion_anchor_ori_b_mf_nonflat",
+                        ],
+                        "params": {
+                            "_target_": "gear_sonic.trl.modules.base_module.BaseModule",
+                            "num_input_temporal_dims": 10,
+                            "num_output_temporal_dims": 2,
+                            "obs_dim_dict": {"actor_obs": 930, "critic_obs": 1645, "tokenizer": 1761},
+                            "module_config_dict": {
+                                "input_dim": [64],   # × num_input_temporal=10 → 640
+                                "output_dim": [32],  # × num_output_temporal=2 → 64
+                                "type": "MLP",
+                                "layer_config": {
+                                    "type": "MLP",
+                                    "hidden_dims": [2048, 1024, 512, 512],
+                                    "activation": "SiLU",
+                                },
+                            },
+                        },
+                    },
                 },
                 "decoders": {
-                    "g1_dyn": {"type": "mlp", "hidden_dims": [2048, 2048, 1024, 1024, 512, 512], "input_features": ["token_flattened", "proprioception"], "output_features": ["action"]},
+                    "g1_dyn": {
+                        "inputs": ["token_flattened", "proprioception"],
+                        "outputs": ["action"],
+                        "has_temporal_dim": False,
+                        "params": {
+                            "_target_": "gear_sonic.trl.modules.base_module.BaseModule",
+                            "obs_dim_dict": {"actor_obs": 930, "critic_obs": 1645, "tokenizer": 1761},
+                            "module_config_dict": {
+                                "input_dim": [994],
+                                "output_dim": [29],
+                                "type": "MLP",
+                                "layer_config": {
+                                    "type": "MLP",
+                                    "hidden_dims": [2048, 2048, 1024, 1024, 512, 512],
+                                    "activation": "SiLU",
+                                },
+                            },
+                        },
+                    },
                 },
-                "quantizer": None,
-                "max_num_tokens": 2,
+            },
+        },
+        "critic": {
+            "_target_": "gear_sonic.trl.modules.actor_critic_modules.Critic",
+            "running_mean_std": True,
+            "backbone": {
+                "_target_": "gear_sonic.trl.modules.base_module.BaseModule",
+                "process_output_dim": True,
+                "module_config_dict": {
+                    "type": "MLP",
+                    "input_dim": ["critic_obs"],
+                    "output_dim": [1],
+                    "layer_config": {
+                        "type": "MLP",
+                        "hidden_dims": [2048, 2048, 1024, 1024, 512, 512],
+                        "activation": "SiLU",
+                    },
+                },
             },
         },
     })
 
-    # Build model
-    actor, critic = build_model(cfg, device="cpu")
-    actor.load_state_dict(torch.load(CKPT, map_location="cpu", weights_only=False)["policy_state_dict"], strict=False)
-    logger.info(f"Model loaded: actor={sum(p.numel() for p in actor.parameters())/1e6:.1f}M")
+    env_config = OmegaConf.create({
+        "obs": {
+            "obs_dims": {"actor_obs": 930, "critic_obs": 1645, "tokenizer": 1761},
+            "obs_dict": {},
+            "group_obs_dims": {"tokenizer": TOKENIZER_OBS_DIMS},
+            "group_obs_names": {"tokenizer": list(TOKENIZER_OBS_DIMS.keys())},
+        },
+        "robot": {
+            "actions_dim": 29,
+            "num_joints": 29,
+            "algo_obs_dim_dict": {"actor_obs": 930, "critic_obs": 1645, "tokenizer": 1761},
+        },
+        "rewards": {"num_critics": 1},
+        "num_envs": 1,
+    })
 
-    # Warmup
-    obs, _, _, _ = env.step(np.random.uniform(-0.2, 0.2, (num_envs, NUM_DOF)).astype(np.float32))
-    obs = {k: v.copy() for k, v in obs.items()}
+    actor = custom_instantiate(
+        algo_cfg.actor,
+        env_config=env_config,
+        algo_config=algo_cfg,
+        _resolve=False,
+    ).to(device)
 
-    for it in range(num_iters):
-        t0 = time.perf_counter()
-        rewards_batch = []
-        for _ in range(num_steps):
-            # Simple action: random (POC — full SONIC forward is complex)
-            actions = np.random.uniform(-0.2, 0.2, (num_envs, NUM_DOF)).astype(np.float32)
-            obs, rewards, dones, info = env.step(actions)
-            rewards_batch.append(rewards.mean())
+    critic = custom_instantiate(
+        algo_cfg.critic,
+        env_config=env_config,
+        algo_config=algo_cfg,
+        _resolve=False,
+    ).to(device)
 
-        dt = time.perf_counter() - t0
-        logger.info(f"  iter {it:3d}: r={np.mean(rewards_batch):.3f} t={dt:.2f}s")
+    return actor, critic, env_config
+
+
+def main():
+    num_envs = 16
+    num_steps = 500  # full episode
+    logger.info(f"SONIC inference: {num_envs}e × {num_steps}s")
+
+    # Build env (ignore_terminations=False — we want to measure real term_rate)
+    env = MuJoCoEnvManager(
+        num_envs=num_envs, num_workers=4,
+        model_xml=XML, pkl_dir=PKL,
+    )
+
+    # Build model and load checkpoint
+    device = "cpu"
+    actor, critic, _ = build_model(device)
+    ckpt = torch.load(CKPT, map_location=device, weights_only=False)
+
+    if "actor_model_state_dict" in ckpt:
+        state_dict = ckpt["actor_model_state_dict"]
+    elif "policy_state_dict" in ckpt:
+        state_dict = ckpt["policy_state_dict"]
+    else:
+        raise KeyError("Checkpoint missing actor_model_state_dict / policy_state_dict")
+
+    missing, unexpected = actor.load_state_dict(state_dict, strict=False)
+    if missing:
+        logger.warning(f"Missing keys ({len(missing)}): {missing[:5]}...")
+    if unexpected:
+        logger.warning(f"Unexpected keys ({len(unexpected)}): {unexpected[:5]}...")
+
+    n_params = sum(p.numel() for p in actor.parameters())
+    logger.info(f"Model loaded: {n_params/1e6:.1f}M params")
+
+    # Warmup: one step to fill SHM
+    logger.info("Warmup step...")
+    _, _, _, _ = env.step(np.random.uniform(-0.2, 0.2, (num_envs, NUM_DOF)).astype(np.float32))
+
+    # ── Inference loop ──
+    actor.eval()
+    actor.init_rollout()
+
+    obs_dict = env.reset_all()
+    obs_dict = {k: v.to(device) for k, v in obs_dict.items()}
+
+    total_rewards = np.zeros(num_envs, dtype=np.float32)
+    episode_lengths = np.zeros(num_envs, dtype=np.int32)
+    terminations = np.zeros(num_envs, dtype=np.int32)
+
+    t0 = time.perf_counter()
+    for step in range(num_steps):
+        with torch.no_grad():
+            actions = actor.act_inference(obs_dict, cur_dones=None)
+        actions_np = actions.cpu().numpy()
+        # Model outputs outside [-1,1] by design (Isaac Sim env clips later).
+        # MuJoCoEnv expects normalized actions; clamp here.
+        actions_np = np.clip(actions_np, -1, 1)
+
+        next_obs, rewards, dones, info = env.step(actions_np)
+        next_obs = {k: v.to(device) for k, v in next_obs.items()}
+
+        total_rewards += rewards.numpy()
+        episode_lengths += 1
+        terminations += dones.numpy().astype(np.int32)
+
+        obs_dict = next_obs
+
+    dt = time.perf_counter() - t0
+
+    # ── Results ──
+    mean_ep_len = episode_lengths.mean()
+    term_rate = terminations.mean()
+    mean_reward = total_rewards.mean()
+
+    logger.info(f"Results: reward={mean_reward:.2f} term_rate={term_rate:.3f} "
+                f"ep_len={mean_ep_len:.1f} time={dt:.1f}s")
+
+    if term_rate < 0.1:
+        logger.info("PASS: pretrained model walks stably in MuJoCoEnv")
+    elif term_rate < 0.3:
+        logger.info("OK: model mostly stable, some falls")
+    else:
+        logger.warning("FAIL: model unstable — check obs/action alignment")
 
     env.close()
-    logger.info("Task 7 POC: PASS")
 
 
 if __name__ == "__main__":
