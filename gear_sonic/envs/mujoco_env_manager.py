@@ -132,6 +132,63 @@ class EnvSharedMemory:
         return obj
 
 
+def _to_numpy(x):
+    """Convert TensorDict / NPU tensor / torch.Tensor → np.ndarray."""
+    if isinstance(x, np.ndarray):
+        return x
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    # NPU TensorDict — try .storage() first
+    if hasattr(x, "storage"):
+        try:
+            raw = x.storage()
+            if isinstance(raw, np.ndarray):
+                r = raw.reshape(x.shape) if hasattr(x, "shape") else raw
+                if isinstance(r, np.ndarray):
+                    return r
+            if isinstance(raw, torch.Tensor):
+                arr = raw.detach().cpu().numpy()
+                r = arr.reshape(x.shape) if hasattr(x, "shape") else arr
+                if isinstance(r, np.ndarray):
+                    return r
+        except Exception:
+            pass
+    # NPU tensor without .cpu() — try .to("cpu")
+    if hasattr(x, "to"):
+        try:
+            tmp = x.to("cpu")
+            if hasattr(tmp, "numpy"):
+                r = tmp.numpy()
+                if isinstance(r, np.ndarray):
+                    return r
+                # TensorDict.numpy() returns dict of {"actions": ndarray, ...}
+                if isinstance(r, dict) and "actions" in r:
+                    a = r["actions"]
+                    if isinstance(a, np.ndarray):
+                        return a
+        except Exception:
+            pass
+    # Iterable fallback
+    if hasattr(x, "__iter__") and hasattr(x, "__len__"):
+        try:
+            r = np.fromiter(x, dtype=np.float32)
+            if isinstance(r, np.ndarray):
+                return r
+        except Exception:
+            pass
+    # Dict fallback with "actions" key
+    if isinstance(x, dict) and "actions" in x:
+        r = _to_numpy(x["actions"])
+        if isinstance(r, np.ndarray):
+            return r
+    raise TypeError(
+        f"Cannot convert actions to numpy: type={type(x)}, "
+        f"module={type(x).__module__}, "
+        f"has_cpu={hasattr(x, 'cpu')}, has_numpy={hasattr(x, 'numpy')}, "
+        f"has_storage={hasattr(x, 'storage')}, has_to={hasattr(x, 'to')}"
+    )
+
+
 def _worker_loop(worker_id, start_env, num_envs, shm_names, barrier, model_xml, pkl_dir, env_config=None):
     """Worker process entry point."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # let parent handle Ctrl-C
@@ -268,7 +325,8 @@ class MuJoCoEnvManager:
         return {k: torch.from_numpy(v).float() for k, v in obs.items()}
 
     # Stub methods for PPO trainer compatibility
-    def set_is_evaluating(self, is_evaluating=True, log_info=False, **kwargs): pass
+    def set_is_evaluating(self, is_evaluating=True, log_info=False, **kwargs):
+        self.is_evaluating = is_evaluating
     def set_is_training(self): pass
     def sync_and_compute_adaptive_sampling(self, *args, **kwargs): pass
     def resample_motion(self): pass
@@ -283,27 +341,8 @@ class MuJoCoEnvManager:
 
         Raises RuntimeError on worker crash — caller must discard current rollout.
         """
-        if isinstance(policy_state_dict, dict):
-            a = policy_state_dict["actions"]
-            # Convert TensorDict / NPU tensor to numpy.  NPU returns a
-            # TensorDict-like object; storage.write() may consume it before
-            # the env sees it.  TODO: debug actual type on server.
-            if hasattr(a, "cpu") and hasattr(a, "numpy"):
-                a = a.cpu().numpy()
-            elif isinstance(a, torch.Tensor):
-                a = a.detach().cpu().numpy()
-            elif isinstance(a, np.ndarray):
-                pass
-            else:
-                raise TypeError(
-                    f"Unsupported actions type: {type(a)}. "
-                    f"Has cpu={hasattr(a, 'cpu')}, numpy={hasattr(a, 'numpy')}"
-                )
-        else:
-            a = policy_state_dict
-            if isinstance(a, torch.Tensor):
-                a = a.detach().cpu().numpy()
-        actions = a
+        actions = _to_numpy(policy_state_dict if not isinstance(policy_state_dict, dict)
+                            else policy_state_dict["actions"])
         act_buf = np.ndarray((self.num_envs, ACT_DIM), dtype=np.float32,
                              buffer=self._shm._actions.data)
         act_buf[:] = actions
@@ -331,6 +370,8 @@ class MuJoCoEnvManager:
                torch.from_numpy(dones).bool(), \
                {"time_outs": torch.from_numpy(timeouts).bool(),
                 "_orig_done": torch.from_numpy(orig_dones).bool(),
+                "episode": {},  # stub for trainer logging
+                "to_log": {},   # stub for episode metrics
                 "terminal_obs": {k: torch.from_numpy(v).float() for k, v in terminal_obs.items()} if terminal_obs is not None else None}
 
     def _handle_worker_crash(self):
