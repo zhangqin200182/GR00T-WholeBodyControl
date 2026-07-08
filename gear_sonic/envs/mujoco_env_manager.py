@@ -220,7 +220,19 @@ class MuJoCoEnvManager:
             p.start()
             self._workers.append(p)
 
+        # Stub inner env for trainer compatibility (observation_space, config, extras)
+        self.env = self._EnvStub()
+        self.extras = {}
+        self.config = {"num_envs": num_envs}
+
         logger.info(f"MuJoCoEnvManager: {num_envs} envs × {self._actual_workers} workers")
+
+    class _EnvStub:
+        """Minimal stub providing observation_space for trainer init."""
+        observation_space = {
+            "policy": type("Space", (), {"shape": (930,)})(),
+            "critic": type("Space", (), {"shape": (1645,)})(),
+        }
 
     def step(self, policy_state_dict):
         """Trainer-side: distribute actions, wait, return results.

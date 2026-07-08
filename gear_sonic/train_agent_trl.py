@@ -28,7 +28,7 @@ if _repo_root not in sys.path:
 try:
     import isaaclab  # noqa: F401
 except ImportError:
-    if not os.environ.get("SONIC_STUB_ENV"):
+    if not os.environ.get("SONIC_STUB_ENV") and not os.environ.get("SONIC_MUJOCO_ENV"):
         print(
             "\n"
             "ERROR: Isaac Lab is required for training but not installed.\n"
@@ -157,7 +157,9 @@ def create_manager_env(config, device, args_cli):
 
 @hydra.main(config_path="config", config_name="base", version_base="1.1")
 def main(config: OmegaConf):
-    simulator_type = "Stub" if os.environ.get("SONIC_STUB_ENV") else "IsaacSim"
+    if os.environ.get("SONIC_MUJOCO_ENV"): simulator_type = "MuJoCo"
+    elif os.environ.get("SONIC_STUB_ENV"): simulator_type = "Stub"
+    else: simulator_type = "IsaacSim"
     env_config = config.manager_env
     from transformers import HfArgumentParser
     from trl import ModelConfig, PPOConfig, ScriptArguments
@@ -342,7 +344,16 @@ def main(config: OmegaConf):
     env_config.config.save_rendering_dir = str(Path(config.experiment_dir) / "renderings_training")
     env_config.config.experiment_dir = str(Path(config.experiment_dir))
 
-    if _use_stub_env:
+    if os.environ.get("SONIC_MUJOCO_ENV"):
+        from gear_sonic.envs.mujoco_env_manager import MuJoCoEnvManager
+        logger.info("Using MuJoCoEnvManager (CPU physics)")
+        env = MuJoCoEnvManager(
+            num_envs=config.num_envs,
+            num_workers=getattr(config, "mujoco_workers", 160),
+            model_xml="/root/GR00T-WholeBodyControl/gear_sonic_deploy/g1/g1_29dof.xml",
+            pkl_dir="/root/GR00T-WholeBodyControl/sample_data/robot_filtered",
+        )
+    elif _use_stub_env:
         from gear_sonic.envs.stub_env import StubEnv
         logger.info("Using StubEnv (no physics simulation)")
         env = StubEnv(config, env_config, device)
@@ -384,28 +395,41 @@ def main(config: OmegaConf):
         module_dim_dict = getattr(config.algo.config, "module_dim", {})
         policy_backbone_kwargs = {}
         critic_backbone_kwargs = {}
-        env.config["obs"]["obs_dims"]["actor_obs"] = env.env.observation_space["policy"].shape[-1]
-        env.config["obs"]["obs_dims"]["critic_obs"] = env.env.observation_space["critic"].shape[-1]
-        env.config["robot"]["algo_obs_dim_dict"]["actor_obs"] = env.env.observation_space[
-            "policy"
-        ].shape[-1]
-        env.config["robot"]["algo_obs_dim_dict"]["critic_obs"] = env.env.observation_space[
-            "critic"
-        ].shape[-1]
-        example_obs = env.reset(flatten_dict_obs=False)
-        for key in env.env.observation_space:
-            if key not in ["policy", "critic"]:
-                group_obs_dims, group_obs_names, group_obs_total_dim = get_group_term_obs_shape(
-                    example_obs, key
-                )
-                env.config["obs"]["group_obs_dims"][key] = group_obs_dims
-                env.config["obs"]["group_obs_names"][key] = group_obs_names
-                env.config["obs"]["obs_dims"][key] = group_obs_total_dim
-                env.config["robot"]["algo_obs_dim_dict"][key] = group_obs_total_dim
-        if config.manager_env.config.get("meta_action_dim", None) is not None:
-            env.config["robot"]["actions_dim"] = config.manager_env.config.meta_action_dim
+        if os.environ.get("SONIC_MUJOCO_ENV"):
+            # MuJoCo: observation dims are hardcoded (no Isaac Sim observation_space)
+            mujoco_env_config = OmegaConf.create({
+                "obs": {
+                    "obs_dims": {"actor_obs": 930, "critic_obs": 1645, "tokenizer": 1761},
+                    "group_obs_dims": {"tokenizer": 1761},
+                    "group_obs_names": {"tokenizer": ["tokenizer"]},
+                },
+                "robot": {"algo_obs_dim_dict": {"actor_obs": 930, "critic_obs": 1645, "tokenizer": 1761}, "actions_dim": 29},
+                "num_envs": config.num_envs,
+            })
+            env.config = mujoco_env_config
         else:
-            env.config["robot"]["actions_dim"] = env.env.action_space.shape[-1]
+            env.config["obs"]["obs_dims"]["actor_obs"] = env.env.observation_space["policy"].shape[-1]
+            env.config["obs"]["obs_dims"]["critic_obs"] = env.env.observation_space["critic"].shape[-1]
+            env.config["robot"]["algo_obs_dim_dict"]["actor_obs"] = env.env.observation_space[
+                "policy"
+            ].shape[-1]
+            env.config["robot"]["algo_obs_dim_dict"]["critic_obs"] = env.env.observation_space[
+                "critic"
+            ].shape[-1]
+            example_obs = env.reset(flatten_dict_obs=False)
+            for key in env.env.observation_space:
+                if key not in ["policy", "critic"]:
+                    group_obs_dims, group_obs_names, group_obs_total_dim = get_group_term_obs_shape(
+                        example_obs, key
+                    )
+                    env.config["obs"]["group_obs_dims"][key] = group_obs_dims
+                    env.config["obs"]["group_obs_names"][key] = group_obs_names
+                    env.config["obs"]["obs_dims"][key] = group_obs_total_dim
+                    env.config["robot"]["algo_obs_dim_dict"][key] = group_obs_total_dim
+            if config.manager_env.config.get("meta_action_dim", None) is not None:
+                env.config["robot"]["actions_dim"] = config.manager_env.config.meta_action_dim
+            else:
+                env.config["robot"]["actions_dim"] = env.env.action_space.shape[-1]
 
         policy = custom_instantiate(
             config.algo.config.actor,
