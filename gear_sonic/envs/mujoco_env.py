@@ -43,13 +43,25 @@ class MuJoCoEnv:
         jr = self.model.jnt_range[1:]
         self.jm = (jr[:,1] + jr[:,0]) / 2; self.jh = (jr[:,1] - jr[:,0]) / 2
         # ── PD gains ──
-        self.kp = np.ones(self.nu) * 30.0; self.kd = np.ones(self.nu) * 3.0
+        self.kp = np.ones(self.nu) * 100.0; self.kd = np.ones(self.nu) * 5.0
+        # ── Per-joint torque limits ──
+        # actuator_forcelimited=False in this XML → parse joint actuatorfrcrange
+        torque = np.ones(self.nu) * 50.0  # default fallback
+        for i in range(self.model.nu):
+            jid = self.model.actuator_trnid[i, 0]  # joint id for this actuator
+            if jid >= 0 and self.model.jnt_actfrcrange is not None:
+                hi = self.model.jnt_actfrcrange[jid][1]
+                if hi > 1e-6: torque[i] = hi
+        self._torque_limit = torque
+        # ── MuJoCo solver: more iterations for QACC stability ──
+        self.model.opt.iterations = 200
         # ── Body indices ──
         self._body_idx = {n: mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, n) for n in BODY_NAMES}
         self._body_indices = np.array([self._body_idx[n] for n in BODY_NAMES])
         # ── Episode ──
         self.ep = 0
         self.max_ep = getattr(config, "max_episode_length", 500) if config else 500
+        self.ignore_terminations = getattr(config, "ignore_terminations", False) if config else False
         # ── Motions ──
         self.motions = self._load_motions(pkl_dir)
         # ── History buffers ──
@@ -153,7 +165,7 @@ class MuJoCoEnv:
     def _pd_control(self, action):
         target = action * self.jh + self.jm
         torque = self.kp * (target - self.data.qpos[7:]) - self.kd * self.data.qvel[6:]
-        self.data.ctrl[:] = np.clip(torque, -50, 50)
+        self.data.ctrl[:] = np.clip(torque, -self._torque_limit, self._torque_limit)
 
     def _physics_step(self):
         for _ in range(self.decimation): mujoco.mj_step(self.model, self.data)
@@ -433,4 +445,11 @@ class MuJoCoEnv:
         if done:
             terminal_obs = {k: v.copy() for k, v in obs.items()}
             obs = self.reset()
-        return obs, reward, done, {"time_outs": truncated, "terminal_obs": terminal_obs}
+        if self.ignore_terminations:
+            # Track original termination for GAE bootstrapping
+            info = {"time_outs": truncated, "terminal_obs": terminal_obs,
+                    "_orig_done": done}
+            done = False
+        else:
+            info = {"time_outs": truncated, "terminal_obs": terminal_obs}
+        return obs, reward, done, info

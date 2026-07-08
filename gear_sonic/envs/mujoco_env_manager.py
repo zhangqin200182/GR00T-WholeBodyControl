@@ -122,7 +122,7 @@ class EnvSharedMemory:
         return obj
 
 
-def _worker_loop(worker_id, start_env, num_envs, shm_names, barrier, model_xml, pkl_dir):
+def _worker_loop(worker_id, start_env, num_envs, shm_names, barrier, model_xml, pkl_dir, env_config=None):
     """Worker process entry point."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # let parent handle Ctrl-C
 
@@ -144,7 +144,7 @@ def _worker_loop(worker_id, start_env, num_envs, shm_names, barrier, model_xml, 
                         offset=start_env * TIMEOUT_BYTES)
 
     # Create local envs
-    envs = [MuJoCoEnv(model_xml, pkl_dir) for _ in range(num_envs)]
+    envs = [MuJoCoEnv(model_xml, pkl_dir, config=env_config) for _ in range(num_envs)]
 
     # Initial reset
     for i, env in enumerate(envs):
@@ -185,11 +185,12 @@ class MuJoCoEnvManager:
     BARRIER_TIMEOUT = 60
     TOTAL_OBS_DIM = OBS_DIM
 
-    def __init__(self, num_envs, num_workers, model_xml, pkl_dir):
+    def __init__(self, num_envs, num_workers, model_xml, pkl_dir, env_config=None):
         self.num_envs = num_envs
         self.num_workers = num_workers
         self.model_xml = model_xml
         self.pkl_dir = pkl_dir
+        self.env_config = env_config
 
         # Calculate env distribution
         envs_per_worker = math.ceil(num_envs / num_workers)
@@ -213,7 +214,7 @@ class MuJoCoEnvManager:
         for worker_id, start, n in worker_args:
             p = mp.Process(
                 target=_worker_loop,
-                args=(worker_id, start, n, self._shm.names, self._barrier, model_xml, pkl_dir),
+                args=(worker_id, start, n, self._shm.names, self._barrier, model_xml, pkl_dir, self.env_config),
                 daemon=True,
             )
             p.start()
@@ -269,7 +270,7 @@ class MuJoCoEnvManager:
             n = min(envs_per_worker, self.num_envs - start)
             if n > 0:
                 p = mp.Process(target=_worker_loop,
-                    args=(i, start, n, self._shm.names, self._barrier, self.model_xml, self.pkl_dir),
+                    args=(i, start, n, self._shm.names, self._barrier, self.model_xml, self.pkl_dir, self.env_config),
                     daemon=True)
                 p.start()
                 self._workers.append(p)
