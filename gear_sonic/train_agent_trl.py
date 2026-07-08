@@ -350,12 +350,12 @@ def main(config: OmegaConf):
         "command_multi_future_nonflat": (10, 58),
         "command_z_multi_future_nonflat": (10, 1),
         "motion_anchor_ori_b_mf_nonflat": (10, 6),
-        "command_multi_future_lower_body": (10, 24),
+        "command_multi_future_lower_body": (240,),
         "vr_3point_local_target": (9,),
         "vr_3point_local_orn_target": (12,),
         "motion_anchor_ori_b": (6,),
         "command_z": (1,),
-        "smpl_joints_multi_future_local_nonflat": (10, 24, 3),
+        "smpl_joints_multi_future_local_nonflat": (10, 72),
         "smpl_root_ori_b_multi_future": (10, 6),
         "joint_pos_multi_future_wrist_for_smpl": (10, 6),
     }
@@ -368,6 +368,7 @@ def main(config: OmegaConf):
             num_workers=getattr(config, "mujoco_workers", 160),
             model_xml="/root/GR00T-WholeBodyControl/gear_sonic_deploy/g1/g1_29dof.xml",
             pkl_dir="/root/GR00T-WholeBodyControl/sample_data/robot_filtered",
+            env_config={"ignore_terminations": True},
         )
         # Build config with all keys the model init needs
         config_dict = OmegaConf.to_container(env_config, resolve=True)

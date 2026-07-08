@@ -23,6 +23,7 @@ ACT_BYTES = ACT_DIM * 4
 REW_BYTES = 4                 # float32
 DONE_BYTES = 1                # uint8
 TIMEOUT_BYTES = 1             # uint8
+ORIG_DONE_BYTES = 1           # uint8 — _orig_done for ignore_terminations
 
 
 class EnvSharedMemory:
@@ -40,6 +41,7 @@ class EnvSharedMemory:
             "rewards": (num_envs * REW_BYTES, np.float32, (num_envs,)),
             "dones": (num_envs * DONE_BYTES, np.uint8, (num_envs,)),
             "timeouts": (num_envs * TIMEOUT_BYTES, np.uint8, (num_envs,)),
+            "orig_dones": (num_envs * ORIG_DONE_BYTES, np.uint8, (num_envs,)),
         }
         for name, (size, dtype, shape) in layouts.items():
             shm = SharedMemory(create=True, size=size)
@@ -73,6 +75,9 @@ class EnvSharedMemory:
     def write_timeout(self, env_id, timeout):
         self._timeouts[env_id] = int(timeout)
 
+    def write_orig_done(self, env_id, done):
+        self._orig_dones[env_id] = int(done)
+
     def read_obs(self):
         return {
             "actor_obs": self._obs[:, :930].copy(),
@@ -100,6 +105,9 @@ class EnvSharedMemory:
     def read_timeouts(self):
         return np.ndarray(self.num_envs, dtype=np.bool_, buffer=self._timeouts.data).copy()
 
+    def read_orig_dones(self):
+        return np.ndarray(self.num_envs, dtype=np.bool_, buffer=self._orig_dones.data).copy()
+
     def close(self):
         for shm in self._shm.values():
             shm.close()
@@ -116,6 +124,7 @@ class EnvSharedMemory:
             "obs": OBS_BYTES, "terminal": OBS_BYTES,
             "actions": ACT_BYTES, "rewards": REW_BYTES,
             "dones": DONE_BYTES, "timeouts": TIMEOUT_BYTES,
+            "orig_dones": ORIG_DONE_BYTES,
         }
         for name, stride in layouts.items():
             shm = SharedMemory(name=names[name])
@@ -143,6 +152,8 @@ def _worker_loop(worker_id, start_env, num_envs, shm_names, barrier, model_xml, 
                           offset=start_env * DONE_BYTES)
     to_buf = np.ndarray(num_envs, dtype=np.uint8, buffer=shm._shm["timeouts"].buf,
                         offset=start_env * TIMEOUT_BYTES)
+    orig_done_buf = np.ndarray(num_envs, dtype=np.uint8, buffer=shm._shm["orig_dones"].buf,
+                               offset=start_env * ORIG_DONE_BYTES)
 
     # Create local envs
     envs = [MuJoCoEnv(model_xml, pkl_dir, config=env_config) for _ in range(num_envs)]
@@ -168,6 +179,7 @@ def _worker_loop(worker_id, start_env, num_envs, shm_names, barrier, model_xml, 
             rew_buf[i] = reward
             done_buf[i] = int(done)
             to_buf[i] = int(info.get("time_outs", False))
+            orig_done_buf[i] = int(info.get("_orig_done", done))
             if info.get("terminal_obs") is not None:
                 tflat = np.concatenate([
                     info["terminal_obs"]["actor_obs"],
@@ -221,6 +233,15 @@ class MuJoCoEnvManager:
             p.start()
             self._workers.append(p)
 
+        # Barrier sync: wait for all workers to finish initial reset
+        try:
+            self._barrier.wait(timeout=self.BARRIER_TIMEOUT)
+            self._barrier.wait(timeout=self.BARRIER_TIMEOUT)
+        except mp.BrokenBarrierError:
+            logger.error("Worker crashed during init!")
+            self.close()
+            raise RuntimeError("Worker crash during init")
+
         # Stub inner env for trainer compatibility (observation_space, config, extras)
         self.env = self._EnvStub()
         self.extras = {}
@@ -262,10 +283,27 @@ class MuJoCoEnvManager:
 
         Raises RuntimeError on worker crash — caller must discard current rollout.
         """
-        if isinstance(policy_state_dict, dict) and "actions" in policy_state_dict:
-            actions = policy_state_dict["actions"]
+        if isinstance(policy_state_dict, dict):
+            a = policy_state_dict["actions"]
+            # Convert TensorDict / NPU tensor to numpy.  NPU returns a
+            # TensorDict-like object; storage.write() may consume it before
+            # the env sees it.  TODO: debug actual type on server.
+            if hasattr(a, "cpu") and hasattr(a, "numpy"):
+                a = a.cpu().numpy()
+            elif isinstance(a, torch.Tensor):
+                a = a.detach().cpu().numpy()
+            elif isinstance(a, np.ndarray):
+                pass
+            else:
+                raise TypeError(
+                    f"Unsupported actions type: {type(a)}. "
+                    f"Has cpu={hasattr(a, 'cpu')}, numpy={hasattr(a, 'numpy')}"
+                )
         else:
-            actions = policy_state_dict
+            a = policy_state_dict
+            if isinstance(a, torch.Tensor):
+                a = a.detach().cpu().numpy()
+        actions = a
         act_buf = np.ndarray((self.num_envs, ACT_DIM), dtype=np.float32,
                              buffer=self._shm._actions.data)
         act_buf[:] = actions
@@ -285,12 +323,14 @@ class MuJoCoEnvManager:
         rewards = self._shm.read_rewards()
         dones = self._shm.read_dones()
         timeouts = self._shm.read_timeouts()
+        orig_dones = self._shm.read_orig_dones()
         terminal_obs = self._shm.read_terminal()
 
         return {k: torch.from_numpy(v).float() for k, v in obs.items()}, \
                torch.from_numpy(rewards).float(), \
                torch.from_numpy(dones).bool(), \
                {"time_outs": torch.from_numpy(timeouts).bool(),
+                "_orig_done": torch.from_numpy(orig_dones).bool(),
                 "terminal_obs": {k: torch.from_numpy(v).float() for k, v in terminal_obs.items()} if terminal_obs is not None else None}
 
     def _handle_worker_crash(self):
