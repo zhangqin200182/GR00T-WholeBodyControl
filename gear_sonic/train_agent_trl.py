@@ -363,9 +363,11 @@ def main(config: OmegaConf):
     if os.environ.get("SONIC_MUJOCO_ENV"):
         from gear_sonic.envs.mujoco_env_manager import MuJoCoEnvManager
         logger.info("Using MuJoCoEnvManager (CPU physics)")
+        # DDP: each rank gets num_envs / world_size envs
+        local_envs = config.num_envs // accelerator.num_processes
         env = MuJoCoEnvManager(
-            num_envs=config.num_envs,
-            num_workers=getattr(config, "mujoco_workers", 160),
+            num_envs=local_envs,
+            num_workers=getattr(config, "mujoco_workers", 160) // accelerator.num_processes,
             model_xml="/root/GR00T-WholeBodyControl/gear_sonic_deploy/g1/g1_29dof.xml",
             pkl_dir="/root/GR00T-WholeBodyControl/sample_data/robot_filtered",
             env_config={"ignore_terminations": True},
