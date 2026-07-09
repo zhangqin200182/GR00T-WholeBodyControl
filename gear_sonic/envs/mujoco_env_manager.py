@@ -7,6 +7,7 @@ interface as ManagerEnvWrapper for PPO trainer compatibility.
 import math, os, time, signal, logging
 import multiprocessing as mp
 from multiprocessing.shared_memory import SharedMemory
+from threading import BrokenBarrierError
 from collections import namedtuple
 import numpy as np
 import torch
@@ -294,7 +295,7 @@ class MuJoCoEnvManager:
         try:
             self._barrier.wait(timeout=self.BARRIER_TIMEOUT)
             self._barrier.wait(timeout=self.BARRIER_TIMEOUT)
-        except mp.BrokenBarrierError:
+        except BrokenBarrierError:
             logger.error("Worker crashed during init!")
             self.close()
             raise RuntimeError("Worker crash during init")
@@ -350,7 +351,7 @@ class MuJoCoEnvManager:
         try:
             self._barrier.wait(timeout=self.BARRIER_TIMEOUT)
             self._barrier.wait(timeout=self.BARRIER_TIMEOUT)
-        except mp.BrokenBarrierError:
+        except BrokenBarrierError:
             logger.error("Worker crashed! Discarding current rollout, re-spawning...")
             self._handle_worker_crash()
             raise RuntimeError(

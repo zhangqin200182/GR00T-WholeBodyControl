@@ -96,10 +96,14 @@ class MuJoCoEnv:
     # ═══════════════════════════════════════════════════════════════════
     def _load_motions(self, pkl_dir):
         motions = []
+        max_motions = 2000  # Limit to avoid OOM (89K motions × 20KB ≈ 2GB per worker)
         for p in sorted(glob.glob(os.path.join(pkl_dir, "**/*.pkl"), recursive=True)):
             if os.path.basename(p).startswith("._"): continue
+            if len(motions) >= max_motions: break
             for v in joblib.load(p).values():
-                if isinstance(v, dict) and "dof" in v: motions.append(v)
+                if isinstance(v, dict) and "dof" in v:
+                    motions.append(v)
+                    if len(motions) >= max_motions: break
         if not motions: raise RuntimeError(f"No motion PKLs in {pkl_dir}")
         return motions
 
