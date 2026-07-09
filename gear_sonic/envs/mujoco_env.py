@@ -96,7 +96,7 @@ class MuJoCoEnv:
     # ═══════════════════════════════════════════════════════════════════
     def _load_motions(self, pkl_dir):
         motions = []
-        max_motions = 2000  # Limit to avoid OOM (89K motions × 20KB ≈ 2GB per worker)
+        max_motions = 200  # Limit per env; 16 ranks × 10 workers × 26 envs × 200 motions = OOM risk
         for p in sorted(glob.glob(os.path.join(pkl_dir, "**/*.pkl"), recursive=True)):
             if os.path.basename(p).startswith("._"): continue
             if len(motions) >= max_motions: break
