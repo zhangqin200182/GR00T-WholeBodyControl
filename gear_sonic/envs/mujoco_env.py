@@ -95,15 +95,26 @@ class MuJoCoEnv:
     # Motion loading
     # ═══════════════════════════════════════════════════════════════════
     def _load_motions(self, pkl_dir):
+        pkls = [p for p in glob.glob(os.path.join(pkl_dir, "**/*.pkl"), recursive=True)
+                if not os.path.basename(p).startswith("._")]
+        if not pkls: raise RuntimeError(f"No motion PKLs in {pkl_dir}")
+        # Each env gets a different random slice of PKL files, avoiding
+        # every env sampling the same alphabetically-first subset.
+        rng = np.random.RandomState(os.getpid() + id(self) % 100000)
+        rng.shuffle(pkls)
+        max_motions = 500
         motions = []
-        max_motions = 200  # Limit per env; 16 ranks × 10 workers × 26 envs × 200 motions = OOM risk
-        for p in sorted(glob.glob(os.path.join(pkl_dir, "**/*.pkl"), recursive=True)):
-            if os.path.basename(p).startswith("._"): continue
-            if len(motions) >= max_motions: break
-            for v in joblib.load(p).values():
-                if isinstance(v, dict) and "dof" in v:
+        for p in pkls:
+            v = joblib.load(p)
+            if isinstance(v, dict):
+                if "dof" in v:
                     motions.append(v)
                     if len(motions) >= max_motions: break
+                for key in v:
+                    if isinstance(v[key], dict) and "dof" in v[key]:
+                        motions.append(v[key])
+                        if len(motions) >= max_motions: break
+            if len(motions) >= max_motions: break
         if not motions: raise RuntimeError(f"No motion PKLs in {pkl_dir}")
         return motions
 
