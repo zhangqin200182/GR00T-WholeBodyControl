@@ -969,7 +969,7 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
 
                 self.ep_infos.append(infos["episode"])
                 self.storage.update_key("rewards", rewards_stored)
-                self.storage.update_key("dones", dones.unsqueeze(1))
+                self.storage.update_key("dones", infos.get("_orig_done", dones).unsqueeze(1))
                 self.storage.update_key("time_outs", infos["time_outs"].unsqueeze(1))
                 self.storage.increment_step()
 
