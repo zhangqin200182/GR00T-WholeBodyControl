@@ -70,8 +70,8 @@ algo:
     num_learning_iterations: 100
     num_steps_per_env: 24
     use_clampped_std: true
-    std_clamp_min: 0.001
-    std_clamp_max: 0.5
+    std_clamp_min: 0.05
+    std_clamp_max: 1.0
     max_grad_norm: 0.1
     actor:
       backbone:

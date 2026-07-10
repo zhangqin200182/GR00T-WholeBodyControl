@@ -976,7 +976,7 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
                 self._process_env_step(rewards, dones, infos)
                 self.cur_reward_sum += rewards_stored
                 self.cur_episode_length += 1
-                new_ids = (dones > 0).nonzero(as_tuple=False)
+                new_ids = infos.get("_orig_done", dones).nonzero(as_tuple=False)
                 self.state.rewbuffer.extend(self.cur_reward_sum[new_ids].cpu().numpy().tolist())
                 self.state.lenbuffer.extend(self.cur_episode_length[new_ids].cpu().numpy().tolist())
                 self.cur_reward_sum[new_ids] = 0
