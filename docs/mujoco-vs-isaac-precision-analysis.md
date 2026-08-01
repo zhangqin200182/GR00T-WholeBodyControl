@@ -193,10 +193,24 @@ solref、damping、kp/kd、摩擦锥、积分器——所有 MuJoCo 允许我们
 
 **总工作量**：2-3 个月（熟悉代码库 + 实现 + 测试 + 调参）。
 
-**风险**：
-- MuJoCo 代码库 ~10 万行 C，模块高度耦合，改接触约束可能破坏全引擎稳定性
-- 上游社区不合并 patch → 每次 MuJoCo 版本升级要手动 rebase
-- 精度提升了但训练速度可能下降（软约束需要更多迭代）
+**技术门槛**：
+
+MuJoCo 虽开源（Apache 2.0），但这不是"加一个插件"——要改动的是引擎最核心的约束求解和 forward dynamics 模块。MuJoCo 的 callback 机制（`mjcb_control`、`mjcb_sensor`）只能扩展传感器或执行器，够不到约束求解循环内部。必须直接改 C 源码。
+
+实施者需要：
+- 熟练 C 语言，能读懂 >10 万行代码库并定位关键函数
+- 理解互补约束求解（complementarity constraint）和 Newton 迭代的数学原理
+- 理解浮基多体动力学（floating-base articulated-body dynamics）
+- 能将 PhysX 的软约束/TGS/Articulation Drive 的算法设计翻译到 MuJoCo 架构内
+- 编译、单测、回归验证不会破坏 MuJoCo 的现有功能
+
+如果没有这样的人员，路径 A 无法落地。
+
+**工程风险**：
+- MuJoCo 代码库 ~10 万行 C，约束求解和 forward dynamics 高度耦合，改一处可能引发全引擎的连锁崩溃
+- 上游社区（DeepMind）不合并 patch → 每次 MuJoCo 版本升级都要手动 rebase 自己的修改
+- 精度提升可能以训练速度为代价：软约束需要更多迭代，关节体算法增加每次 step 的计算量
+- 验证困难：没有 Isaac Sim 对比，只能靠 α 值和 ref PD 存活步数间接判断——可能"方向对了但没走到位"
 
 ### 4.2 路径 B：换物理引擎
 
