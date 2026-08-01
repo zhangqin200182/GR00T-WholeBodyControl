@@ -220,6 +220,35 @@ MuJoCo 虽开源（Apache 2.0），但这不是"加一个插件"——要改动�
 
 **风险**：新引擎的观测空间、动作空间、MDP 接口全部要重新对接；可能引入新的兼容性问题。
 
+### 4.3 社区现状：开源社区尚未解决此问题
+
+我们对该问题的探索处于开源社区的前沿。目前社区对 MuJoCo 人形浮基精度问题的处理全部停留在**参数调优层面**——和我们一样。
+
+**MuJoCo 官方讨论 #1942 (2024)**：MuJoCo 协作者针对人形 mesh 脚滑动问题给出的建议是调 solref、降 timestep、加 iterations、开 elliptic cone——这些参数我们已全部扫描完毕，均为最优。
+
+**SoftFoot 论文 (2025, IEEE Access)**：ETH Zurich 团队用 MuJoCo 做人形软脚仿真，发现需要把 timestep 降到 **0.1ms**（我们的 1/20）才能稳定。他们没有修改 MuJoCo 约束求解器，只是接受了更小的步长和更慢的仿真速度。
+
+**MuJoCo 社区的整体画像**：没有找到任何一个公开的 MuJoCo fork 或 patch 实现了软约束接触模型或关节体力传播。DeepMind 团队本身也更关注 MJX（JAX 可微版本）的性能优化，而非物理模型精度的提升。原因：
+
+- 双足人形精细 motion tracking 在 MuJoCo 社区是极小众需求
+- 大部分用户（机械臂、四足、步态生成）不需要这个精度级别
+- 修改约束求解器 C 代码的工程门槛极高，动手了也不保证不破坏 MuJoCo 其他场景的性能
+
+### 4.4 为什么 MuJoCo 在机械臂上精度足够
+
+尽管在浮基人形上存在精度瓶颈，但 MuJoCo 在**固定基座机器人**上表现优秀，有大量代表性项目佐证：
+
+| 项目 | 机构 | 机械臂 | 用途 |
+|---|---|---|---|
+| **robosuite v1.5** | Stanford / NVIDIA GEAR | Panda, IIWA, UR5e 等 10 种 | 9 项标准化操作 benchmark |
+| **VLABench** | HuggingFace LeRobot | Franka Panda 7-DOF | 100 类语言条件长程操作 |
+| **DeepMind Control Suite** | Google DeepMind | 多种 | 20 项泛化操作任务 |
+| **Panda MuJoCo Gym** | 开源社区 | Franka Panda | push/slide/pick-and-place |
+
+这些项目**从未报告过"物理精度不足"的问题**——因为机械臂底座固定，不存在浮基漂移的正反馈回路。同一套 MuJoCo 引擎，在机械臂上跑成千上万步毫无衰减，在我们的 G1 双足场景下 20 步就触发终止。
+
+**这进一步验证了我们的诊断：问题不是 MuJoCo 整体精度差，是它的硬约束接触模型和关节体力-接触解耦恰好撞上了浮基人形 long-horizon tracking 这个最脆弱的组合。**
+
 ## 5. 结论
 
 | 问题 | 答案 |
