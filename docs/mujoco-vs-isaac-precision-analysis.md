@@ -212,15 +212,60 @@ MuJoCo 虽开源（Apache 2.0），但这不是"加一个插件"——要改动�
 - 精度提升可能以训练速度为代价：软约束需要更多迭代，关节体算法增加每次 step 的计算量
 - 验证困难：没有 Isaac Sim 对比，只能靠 α 值和 ref PD 存活步数间接判断——可能"方向对了但没走到位"
 
-### 4.2 路径 B：换物理引擎
+### 4.2 路径 B：换 PhysX 引擎（ovphysx）
 
-换用 RaiSim（ETH Zurich，CPU 约束投影 + 软穿透 + mesh 碰撞）或 Bullet。
+2025 年 NVIDIA 发布了 `ovphysx`——PhysX 5 的独立 Python 绑定，**pip install 即可用**，无需 Isaac Sim。
 
-**工作量**：重写 `mujoco_env.py` / `mujoco_env_manager.py`（~1000 行），适配新引擎的 Python API。2-4 周。
+```
+pip install ovphysx   # Python 3.10+, Linux x86_64/aarch64, Windows
+```
 
-**风险**：新引擎的观测空间、动作空间、MDP 接口全部要重新对接；可能引入新的兼容性问题。
+| 特性 | ovphysx | MuJoCo 当前 |
+|---|---|---|
+| 引擎 | PhysX 5（和 Isaac Sim 相同） | MuJoCo 3.10 |
+| 接触模型 | PGS/TGS 软约束 | Newton 硬约束 |
+| 安装 | `pip install` | `pip install mujoco` |
+| GPU 需求 | 可选（CPU 可用） | 无 |
+| aarch64 支持 | ✅ | ✅ |
+| USD 模型加载 | ✅ 原生 | ❌（需 MJCF） |
+| 关节体算法 | Articulation Drive | 手动 PD |
+| DLPack 对接 | ✅ PyTorch/NumPy 零拷贝 | ❌ |
+| **α (预估)** | **< 0.002**（和 Isaac 同级） | **0.013** |
+| 开源协议 | BSD-3 | Apache 2.0 |
 
-### 4.3 社区现状：开源社区尚未解决此问题
+**路径 B 的性质变了——不再是"换一个陌生引擎"，而是"换到和 Isaac 完全一样的物理引擎，只是去掉 GPU 平台层"。** 6.5× α gap 在引擎层直接清零。
+
+**工作量**：重写 `mujoco_env.py` / `mujoco_env_manager.py`（~1000 行），适配 ovphysx API + G1 模型转 USD 格式。预估：**2-4 周（1 人）**。
+
+**风险**：
+- ovphysx 仍标记为 pre-release，API 可能变动
+- G1 MJCF XML 需转换为 USD 格式
+- 训练管线（ppo_trainer）的观测格式可能需要适配
+- 社区资源少（ovphysx 较新，文档和案例不如 MuJoCo 丰富）
+
+### 4.3 MuJoCo 社区 2025-2026：参数优化尚有空间
+
+2025-2026 年，MuJoCo 社区出现了多个浮基人形项目，他们**不改 C++ 源码**，但使用了我们尚未尝试的高级参数组合，取得了比我们更好的效果。
+
+**asRoBallet (RSS 2026)**：人形球机器人，用 MuJoCo 实现**零样本 Sim2Real 迁移**。关键参数设置：
+
+| 参数 | asRoBallet 值 | 我们的值 | 我们是否扫过 |
+|---|---|---|---|
+| `cone` | **elliptic** | pyramidal | ✅ 已测（+3.4%） |
+| `impratio` | **10** | 1.0（默认） | ❌ **从未扫描！** |
+| `solimp` | `0.85 0.99 0.003` | 默认（未设） | ❌ **从未扫描！** |
+| `noslip_iterations` | 1 | 3 | 已测 |
+| Newton solver | ✅ | ✅ | 一致 |
+
+**`impratio` 是关键遗漏**：这个参数控制隐式积分和显式积分的比例。`impratio=10` 意味着 10 倍于默认的隐式权重——接触力更平滑、高频振荡更少。这是 MuJoCo 参数里**最接近"软约束"行为的调节旋钮**——我们从未碰过。
+
+**ZMP-aware MPC (2026)**：用 MuJoCo 做人形跟踪，Cartwheel 成功率从 47% 提升到 70%。
+
+**MuJoCo 3.5 sysid 模块 (2025)**：新增系统辨识模块，社区在用它做浮基参数辨识——说明浮基精度问题已被社区关注。
+
+**启示**：参数层面可能**尚未真正到头**。impratio + solimp + elliptic cone 的组合，asRoBallet 用它在更复杂的人形任务上实现了零样本迁移。我们应该补扫 `impratio`——这可能是参数级改善的最后一块拼图。
+
+### 4.4 社区现状：开源社区尚未解决此问题
 
 我们对该问题的探索处于开源社区的前沿。目前社区对 MuJoCo 人形浮基精度问题的处理全部停留在**参数调优层面**——和我们一样。
 
@@ -234,7 +279,7 @@ MuJoCo 虽开源（Apache 2.0），但这不是"加一个插件"——要改动�
 - 大部分用户（机械臂、四足、步态生成）不需要这个精度级别
 - 修改约束求解器 C 代码的工程门槛极高，动手了也不保证不破坏 MuJoCo 其他场景的性能
 
-### 4.4 为什么 MuJoCo 在机械臂上精度足够
+### 4.5 为什么 MuJoCo 在机械臂上精度足够
 
 尽管在浮基人形上存在精度瓶颈，但 MuJoCo 在**固定基座机器人**上表现优秀，有大量代表性项目佐证：
 
@@ -249,7 +294,7 @@ MuJoCo 虽开源（Apache 2.0），但这不是"加一个插件"——要改动�
 
 **这进一步验证了我们的诊断：问题不是 MuJoCo 整体精度差，是它的硬约束接触模型和关节体力-接触解耦恰好撞上了浮基人形 long-horizon tracking 这个最脆弱的组合。**
 
-#### 4.4.1 机械臂社区的选择：MuJoCo 是第一梯队，不需要 Isaac Sim
+#### 4.5.1 机械臂社区的选择：MuJoCo 是第一梯队，不需要 Isaac Sim
 
 2024 年的研究数据显示，机械臂操作社区**不依赖 Isaac Sim**。MuJoCo 是这个领域的事实标准：
 
