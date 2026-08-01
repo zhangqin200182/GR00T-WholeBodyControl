@@ -249,6 +249,22 @@ MuJoCo 虽开源（Apache 2.0），但这不是"加一个插件"——要改动�
 
 **这进一步验证了我们的诊断：问题不是 MuJoCo 整体精度差，是它的硬约束接触模型和关节体力-接触解耦恰好撞上了浮基人形 long-horizon tracking 这个最脆弱的组合。**
 
+#### 4.4.1 机械臂社区的选择：MuJoCo 是第一梯队，不需要 Isaac Sim
+
+2024 年的研究数据显示，机械臂操作社区**不依赖 Isaac Sim**。MuJoCo 是这个领域的事实标准：
+
+| 指标 | MuJoCo | Isaac Sim |
+|---|---|---|
+| 2024 年 ML 引用量 | **3,827 篇** | 快速增长但远不及 |
+| 灵巧手操作论文 | **82% 用 MuJoCo** | ~15% |
+| 单 CPU 核速度 | **1000+ Hz**（7-DOF 臂） | 需要 RTX GPU 加速 |
+| 开源 / 费用 | Apache 2.0 / 免费 | 闭源 / 需要 RTX GPU |
+| 代表性框架 | robosuite, VLABench, DM Control | Isaac Lab, Orbit |
+
+**VLABench (2024)**——HuggingFace LeRobot 的旗舰操作 benchmark——用 MuJoCo + Franka Panda 做 100 类语言条件操作任务。**robosuite v1.5 (2024)**——Stanford + NVIDIA GEAR 联合维护的操作仿真平台——底层引擎是 MuJoCo，不是 Isaac Sim。NVIDIA 自己的 GEAR 团队都选择用 MuJoCo 做标准化操作 benchmark——因为 MuJoCo 在固定基座场景下既快又准且免费。
+
+**对于我们的启示**：如果后续要做机械臂操作训练（VLA 预训练后需要操作数据收集和微调），直接复用现有的 MuJoCo 架构即可——不需要 Isaac Sim，精度完全足够。浮基人形 motion tracking 是 MuJoCo 的最弱项，而机械臂操作是其最强项。
+
 ## 5. 结论
 
 | 问题 | 答案 |
