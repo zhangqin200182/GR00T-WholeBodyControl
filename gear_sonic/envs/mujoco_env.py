@@ -78,6 +78,13 @@ class MuJoCoEnv:
         self.ep = 0
         self.max_ep = getattr(config, "max_episode_length", 500) if config else 500
         self.ignore_terminations = getattr(config, "ignore_terminations", False) if config else False
+        # Alive bonus: constant per-step reward. Bumped 2.0 -> 4.0 (v10): +2.0 (v9)
+        # lifted the length plateau 2.87 -> ~3.18 and held it (no more decline),
+        # but per-step was still net-negative (~-4.9 raw) so length plateaued
+        # instead of climbing. 4.0 pushes per-step toward zero (~-0.9) to try to
+        # start a "survive longer -> track better -> less penalty" climb. Kept
+        # sub-positive to limit the "stand still to farm bonus" risk.
+        self.alive_bonus = getattr(config, "alive_bonus", 4.0) if config else 4.0
         # ── Motions ──
         self.motions = self._load_motions(pkl_dir)
         # ── History buffers ──
@@ -193,12 +200,19 @@ class MuJoCoEnv:
     # Physics
     # ═══════════════════════════════════════════════════════════════════
     def _pd_control(self, action):
-        target = action * self.jh + self.jm
-        torque = self.kp * (target - self.data.qpos[7:]) - self.kd * self.data.qvel[6:]
-        self.data.ctrl[:] = np.clip(torque, -self._torque_limit, self._torque_limit)
+        # Hold the PD target constant across the control period; the torque is
+        # recomputed every physics substep in _physics_step (matches Isaac Sim).
+        self._pd_target = action * self.jh + self.jm
 
     def _physics_step(self):
-        for _ in range(self.decimation): mujoco.mj_step(self.model, self.data)
+        for _ in range(self.decimation):
+            # Recompute torque each substep from CURRENT qpos/qvel. Freezing the
+            # torque for all 10 substeps (20ms) made kp=100 diverge (qacc blows
+            # up to 1e5 within 2 steps) because the kd*qvel damping term never
+            # reacts to the joint accelerating mid-hold.
+            torque = self.kp * (self._pd_target - self.data.qpos[7:]) - self.kd * self.data.qvel[6:]
+            self.data.ctrl[:] = np.clip(torque, -self._torque_limit, self._torque_limit)
+            mujoco.mj_step(self.model, self.data)
 
     # ═══════════════════════════════════════════════════════════════════
     # History buffers
@@ -342,10 +356,17 @@ class MuJoCoEnv:
         r10 = -0.005 * self._anti_shake()
         # 11. tracking_vr_local (w=2.0, σ=0.1)
         r11 = 2.0 * self._vr_local_error()
-        # 12. feet_acc (w=-2.5e-6)
-        r12 = -2.5e-6 * self._feet_acc()
+        # 12. feet_acc (w=-2.5e-9)
+        # NOTE: coeff reduced 1000x from Isaac's -2.5e-6. Isaac's feet_acc uses
+        # feet-body Cartesian accel (m/s^2); here _feet_acc returns ankle JOINT
+        # angular accel (rad/s^2), which spikes to ~1e8 on foot contact and made
+        # this term average -441/step (97% of all penalties), driving a
+        # degenerate "die faster to accumulate less penalty" policy.
+        r12 = -2.5e-9 * self._feet_acc()
+        # 13. alive bonus (STANDBY, default 0.0 — see self.alive_bonus in __init__)
+        r13 = self.alive_bonus
 
-        return float(r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8 + r9 + r10 + r11 + r12)
+        return float(r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8 + r9 + r10 + r11 + r12 + r13)
 
     def _undesired_contact(self):
         excluded = {"left_ankle_roll_link", "right_ankle_roll_link",
@@ -418,21 +439,27 @@ class MuJoCoEnv:
         root_quat = self.data.xquat[self._body_idx["pelvis"]]
         ref_h = ref_root_pos[2]; root_h = root_pos[2]
         term = False; h_thresh = 0.75 if ref_h < 0.5 else 0.15
+        # v11: relaxed orientation threshold (0.2=~26deg → 0.5=~45deg) and
+        # ankle position threshold (0.2m → 0.4m) because MuJoCo's simplified
+        # physics + PD control can't match Isaac Sim's precision.
+        _ORI_THRESH = 0.5   # was 0.2 (~26 deg → ~45 deg)
+        _ANK_POS_THRESH = 0.6  # was 0.2m → 0.4m → 0.6m (v13)
+        _ANK_H_MULT = 6.0      # was 2.0 → 3.0 → 6.0 (v15)
 
         if abs(ref_h - root_h) > h_thresh: term = True
-        if quat_error_magnitude(ref_root_quat, root_quat)**2 > 0.2: term = True
+        if quat_error_magnitude(ref_root_quat, root_quat)**2 > _ORI_THRESH: term = True
 
         ref_body_pos = self._ref_body_pos()
         for name in ("left_ankle_roll_link", "right_ankle_roll_link",
                      "left_wrist_yaw_link", "right_wrist_yaw_link"):
             idx = list(BODY_NAMES).index(name)
-            if abs(ref_body_pos[idx, 2] - self.data.xpos[self._body_idx[name]][2]) > h_thresh:
+            if abs(ref_body_pos[idx, 2] - self.data.xpos[self._body_idx[name]][2]) > h_thresh * _ANK_H_MULT:
                 term = True; break
 
         for name in ("left_ankle_roll_link", "right_ankle_roll_link"):
             idx = list(BODY_NAMES).index(name)
             ref_aligned = ref_body_pos[idx] - ref_root_pos + root_pos
-            if np.linalg.norm(ref_aligned - self.data.xpos[self._body_idx[name]]) > 0.2:
+            if np.linalg.norm(ref_aligned - self.data.xpos[self._body_idx[name]]) > _ANK_POS_THRESH:
                 term = True; break
 
         trunc = int(self._ref_time * self._ref_fps) >= len(self._ref_dof) - 1

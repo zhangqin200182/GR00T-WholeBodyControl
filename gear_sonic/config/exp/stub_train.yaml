@@ -67,6 +67,10 @@ algo:
     bf16: false
     fp16: false
   config:
+    # v15: regression test — revert to v12 framework, only relax thresholds
+    g1_dyn_reinit: false
+    g1_dyn_reinit_layers: 3
+    g1_dyn_freeze_backbone: false
     num_learning_iterations: 100
     num_steps_per_env: 24
     use_clampped_std: true
