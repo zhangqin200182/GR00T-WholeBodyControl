@@ -1,4 +1,4 @@
-# PhysX (ovphysx) 引擎切换设计方案
+# PhysX 5 引擎切换设计方案 v2
 
 ## 1. 背景与动机
 
@@ -23,124 +23,123 @@
 | | per-step drift α | ref PD 存活 (ANK=0.2) |
 |---|---|---|
 | MuJoCo (参数推顶) | ~0.010 m/步 | ~28 步 |
-| **Isaac Sim (PhysX)** | **< 0.002 m/步** | **100+ 步** |
+| Isaac Sim (PhysX) | < 0.002 m/步 | 100+ 步 |
 
-差距不在参数层——在 MuJoCo 的硬约束接触模型和关节体力-接触解耦。这两项都是引擎 C++ 源码控制的。
+### 1.3 路径选择：裸 PhysX 5 SDK + MJCF（不走 ovphysx USD 路径）
 
-### 1.3 为什么选中 ovphysx
+| 路径 | aarch64 状态 | 结论 |
+|---|---|---|
+| ovphysx + USD | ❌ pip wheel 缺 libovstage.so / libov_usd_ms.so | 阻塞（NVIDIA 未开源这些模块） |
+| **裸 PhysX 5 C++ API + MJCF** | **✅ 已编译验证通过** | **可行** |
 
-2025 年 NVIDIA 发布了 `ovphysx`——PhysX 5 的独立 Python 绑定：
-
-- `pip install ovphysx`（开箱即用）
-- CPU 可用（不强制 GPU）→ NPU 服务器能跑
-- Linux aarch64 支持 → 华为昇腾 ARM 服务器能跑
-- 和 Isaac Sim 使用**完全相同的物理引擎**
-- BSD-3 开源协议
-- DLPack 零拷贝对接 PyTorch/NumPy
-
-**换 ovphysx = 保留全部训练架构 + 物理引擎换成和 Isaac 一样的。**
+OpenUSD 的 200 万行代码 70% 给了渲染（Hydra, MaterialX, 灯光/相机/UI）——我们只需要 Physics 那 10%。MJCF XML 已经包含了 PhysX 需要的全部物理参数（质量、惯性、关节、碰撞），OpenUSD 是多余的。
 
 ## 2. 架构对比
 
 ### 2.1 当前架构 (MuJoCo)
 
 ```
-ppo_trainer (复用) → MuJoCoEnvManager (自写, multiprocessing)
-                       → MuJoCoEnv (自写, 520行)
-                         → mujoco.mj_step (C 引擎, 硬约束)
+ppo_trainer → MuJoCoEnvManager (multiprocessing, SHM)
+                → MuJoCoEnv (520行 Python)
+                  → mujoco.mj_step (C 引擎, 硬约束)
+                  → MJCF XML 加载 (mujoco 原生)
 ```
 
-### 2.2 目标架构 (ovphysx)
+### 2.2 目标架构 (PhysX 5)
 
 ```
-ppo_trainer (复用) → PhysXEnvManager (新写, multiprocessing)
-                       → PhysXEnv (新写, 移植物理层)
-                         → physx.step (C++ 引擎, PGS 软约束)
+ppo_trainer → PhysXEnvManager (复用 SHM+Barrier 模式)
+                → PhysXEnv (~500行 Python, pybind11 绑定)
+                  → PhysX 5 PxScene::simulate (C++ 引擎, PGS 软约束)
+                  → MJCF→PhysX 转换器 (~300行 Python)
 ```
 
 ### 2.3 改动清单
 
-| 模块 | 当前 | 目标 | 改动量 | 说明 |
-|---|---|---|---|---|
-| **物理引擎** | `mujoco.mj_step` | `physx.step` | 新写 | ovphysx API |
-| **PD 控制** | `_pd_control()` + `_physics_step()` | PhysX Articulation Drive | 新写 | 和 Isaac 行为一致 |
-| **观测构建** | `_build_tokenizer()` 1761D | 同逻辑，读 PhysX state | 移植 | 公式不变，数据源换 API |
-| **奖励计算** | `_compute_reward()` 13 项 | 同逻辑，读 PhysX state | 移植 | 公式不变 |
-| **终止判断** | `_check_termination()` 4 条件 | 同逻辑 | 移植 | 公式不变 |
-| **并行管理** | `MuJoCoEnvManager` | `PhysXEnvManager` | 新写 | 复用 SHM+Barrier 模式 |
-| **训练器** | `ppo_trainer` | **不改** | 0 | 观测/奖励格式兼容即可 |
-| **模型** | UniversalTokenModule | **不改** | 0 | 输入输出维度不变 |
-| **G1 模型** | MJCF XML | USD (ovphysx 原生加载) | 转换 | MJCF→USD 转换器 |
-| **渲染** | OSMesa | 可选 | 新写 | ovphysx 无内置渲染 |
-
-**总计**：~1500 行新代码 + G1 模型格式转换。ppo_trainer、模型架构、训练流程全不变。
+| 模块 | 当前 | 目标 | 改动量 |
+|---|---|---|---|
+| **物理引擎** | `mujoco.mj_step` | `PxScene::simulate` | 新写 pybind11 封装 |
+| **PD 控制** | `_pd_control()` | `PxArticulationDrive` | 移植 API |
+| **模型加载** | `mujoco.MjModel.from_xml_path` | **MJCF→PhysX 转换器** | ~300 行 Python |
+| **观测构建** | `_build_tokenizer()` | 同逻辑，读 PhysX state | 移植（公式不变） |
+| **奖励计算** | `_compute_reward()` 13 项 | 同逻辑 | 移植（公式不变） |
+| **终止判断** | `_check_termination()` | 同逻辑 | 移植（公式不变） |
+| **并行管理** | MuJoCoEnvManager | PhysXEnvManager | 复用 SHM+Barrier |
+| **训练器/模型** | ppo_trainer, UniversalTokenModule | **不改** | 0 |
 
 ## 3. 实现方案
 
-### Phase 1：最小可行验证（1 周）
+### Phase 0：aarch64 原生编译 ✅（已完成）
 
-**目标**：G1 模型在 ovphysx 里能站稳 + 跑 ref PD。
+```
+PhysX 5 SDK → cmake linux-aarch64-gcc-cpu-only → make -j64
+→ bin/linux.aarch64/release/libPhysX_static_64.a (静态库)
+→ bin/linux.aarch64/release/libPhysX_64.so     (动态库)
+→ 成功编译，0 error
+```
 
-1. G1 MJCF XML → USD 转换（或用 ovphysx API 手动搭建刚体链）
-2. 单 env ref PD tracking：`physx.step(dt)` 替代 `mj_step`
-3. 测 α——验证 < 0.002
-4. 如果 ref PD 存活 > 50 步 → 物理达标，继续 Phase 2
+### Phase 1：pybind11 封装 + 模型加载（2 周）
 
-**判据**：ref PD 存活 > 50 步（当前 MuJoCo：21 步）。
+1. pybind11 封装核心 PhysX API：`PxCreateScene`, `PxArticulation`, `PxArticulationDrive`, `PxScene::simulate`, `PxScene::fetchResults`
+2. MJCF→PhysX 转换器：解析 G1 XML → 创建 `PxArticulationReducedCoordinate` + 29 个 `PxArticulationJointReducedCoordinate` + box 碰撞几何
+3. 单 env 验证：加载 G1 模型 → 跑一步 `simulate(dt=0.002)` → 读出 qpos/qvel 验证正确
 
-### Phase 2：MDP 层移植（1-2 周）
+### Phase 2：MDP 层移植 + ref PD 验证（1 周）
 
-**目标**：`PhysXEnv` 实现完整的 step/reset/obs/reward/termination。
-
-1. 移植 `_compute_reward()`——13 项数学公式不变，数据源从 `data.xpos` 换成 PhysX state API
-2. 移植 `_check_termination()`——4 条件不变
-3. 移植 `_build_tokenizer()`——1761D 拼接逻辑不变
-4. 移植 PD 控制——换成 PhysX Articulation Drive API（`drive.set_target()`）
-
-**判据**：单 env BC warmup 权重 deterministic 推理 > 20 步。
+1. 移植 `_pd_control()` → PhysX `PxArticulationDrive`
+2. 移植 `_compute_reward()`（13 项数学不变）
+3. 移植 `_check_termination()`（4 条件不变）
+4. 移植 `_build_tokenizer()`（1761D 拼接不变）
+5. ref PD 验证：测 α，预期 < 0.002
 
 ### Phase 3：并行 + 训练联调（1 周）
 
-**目标**：完整的训练管线跑通。
-
-1. `PhysXEnvManager`——复用 SHM+Barrier 模式
-2. 对接 `ppo_trainer`——观测/奖励格式验证
-3. BC warmup smoke test（100 iter）
-4. PPO smoke test（100 iter）
-
-**判据**：训练不 crash、指标正常。
+1. PhysXEnvManager（SHM+Barrier 复用）
+2. BC warmup smoke test
+3. PPO smoke test
 
 ## 4. 目标与验收
 
-| 指标 | MuJoCo 当前 | ovphysx 目标 | 验收方法 |
+| 指标 | MuJoCo 当前 | PhysX 目标 | 验收方法 |
 |---|---|---|---|
-| ref PD α | 0.013 | **< 0.002** | 100 episode ref PD 统计 |
+| aarch64 编译 | N/A | **✅ 已通过** | Phase 0 |
+| ref PD α | 0.013 | **< 0.002** | 100 episode |
 | ref PD 存活 (ANK=0.2) | 21 | **> 80** | 同上 |
 | BC warmup length | 20.6 | **> 60** | 100 episode deterministic |
-| PPO 训练收敛 | entropy 不收敛 | **entropy 正常收敛** | TB 监控 |
-| 训练速度 | 15K fps | **> 5K fps**（可接受降速） | TB fps 指标 |
+| 训练速度 | 15K fps | > 5K fps（可接受降速） | TB 指标 |
 
-**最终验收**：ovphysx 上训练的 BC+PPO 策略，在 Isaac Sim 上 deterministic 推理存活 > 80 步（如果能访问 Isaac 做验证）。
+## 5. MJCF→PhysX 转换器设计
 
-## 5. 风险与缓解
+PhysX 5 的 `PxArticulationReducedCoordinate` 是专为机器人设计的 reduced-coordinate 关节体——和 MuJoCo 的运动学模型完全对应：
+
+```
+MJCF <joint name="left_knee" axis="0 1 0" range="..." damping="2.0" frictionloss="3.0"/>
+  ↓ 直接映射
+PhysX: PxArticulationJointReducedCoordinate
+  parentLink = left_hip_yaw
+  childLink = left_knee
+  jointType = eREVOLUTE
+  axis = (0, 1, 0)
+  lowerLimit = -0.087
+  upperLimit = 2.880
+  friction = 3.0
+  damping = 2.0
+```
+
+无需 OpenUSD。MJCF XML 里的全部物理参数已经足够构建 PhysX 模型。
+
+## 6. 风险与缓解
 
 | 风险 | 概率 | 缓解 |
 |---|---|---|
-| ovphysx aarch64 不兼容或 API 不稳定 | 中 | Phase 1 第一天验证 |
-| G1 MJCF→USD 转换失败或模型不对 | 中 | 备选：ovphysx API 手动搭建刚体链 |
-| PhysX Articulation Drive 和 Isaac 行为不一致 | 低 | 用 Isaac Sim 相同的 kp/kd/damping 参数 |
-| 训练速度显著下降（CPU PhysX 比 MuJoCo 慢） | 中 | ovphysx 宣称支持 CPU 并行；如果太慢考虑减少 env 数 |
-| ovphysx 社区支持不足 | 高 | 以 MuJoCo 实现为备份，ovphysx 出问题随时切回 |
+| PhysX 浮基精度达不到 Isaac 水平 | 低 | PhysX 5 和 Isaac Sim 是同一个引擎——接触模型、积分器、摩擦求解完全一致 |
+| aarch64 性能不足 | 中 | 使用 CPU-only 预设，复用现有 SHM 架构；如果太慢考虑减少 env 数 |
+| pybind11 封装工作量超预期 | 中 | 只封装最小 API 集（~20 个函数），不追求完整绑定 |
+| PhysX API 行为与 MuJoCo 不同 | 低 | Phase 2 用 ref PD 验证——数据对比 α，直接量化差距 |
 
-## 6. 不做的事
+## 7. 参考
 
-- 改 MuJoCo C++ 源码（投入产出比差，ovphysx 直接解决）
-- Isaac Sim / GPU 依赖（NPU 服务器没有 GPU）
-- 换其他引擎 (RaiSim/Bullet)（ovphysx = Isaac Sim 同引擎，天然最优）
-- 改训练算法或模型架构
-
-## 7. 相关文档
-
+- PhysX 5 GitHub: https://github.com/NVIDIA-Omniverse/PhysX
+- PhysX 5 SDK 文档: https://nvidia-omniverse.github.io/PhysX/physx/5.5.0/
 - [[mujoco-vs-isaac-precision-analysis]] — 架构对比与精度分析完整报告
 - [[status-and-next-steps]] — 项目当前状态
-- [[training-retrospective-report]] — 15 轮实验回顾
