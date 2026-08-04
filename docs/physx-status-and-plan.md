@@ -58,9 +58,9 @@ MuJoCo 经过 15+ 轮实验，最佳 α=0.013（Isaac 目标 <0.002），差距 
 - FK 精度大幅改善：PhysX `getGlobalPose` 误差从 3.77m 降到 0.06m
 - 但物理稳定性被破坏：第 11 步 NaN，而不修复可以稳定跑 100+ 步
 
-- 在 2-link 简化模型上测试：2-link 上物理稳定，但 addArticulation 后子链接在错误位置（传播的符号或方向有问题）
+- 在 2-link 简化模型上测试：**2-link（零 CoM）上 setParentPose 物理稳定**，API 本身有效。说明问题出在 G1 的多体深链 + 非零 CoM 场景——coincidence 暗示 setParentPose 在 parentCoM frame 下的语义可能与 createLink 时（CoM=Identity）推导的 frame 坐标系不一致，深链时累积的坐标系偏差导致约束矛盾。
 
-**为什么失败**：`createLink(world_poses)` 同时设置 body 位置和 joint frame，它们是同一个 `pose` 参数推导出的自洽对。修改 joint frame 后 body 位置没有同步更新——solver 看到 joint 约束锚点和 body 当前位置的矛盾，把机器人撕碎。
+**为什么失败**：G1 全模型上，`createLink(world)` 传入的 world_poses 是 MJCF 树累积的世界坐标——body 初始位置本身是正确的。但 createLink 时 CoM 还是 Identity，内部计算的 `parentPose = I⁻¹ × world_pose = world_pose`（用错误 CoM 推导）。之后 `setCMassLocalPose(real)` 改了 CoM，但已存储的 parentPose 没重算。`setParentPose(correct)` 试图修正每个 joint frame，然而 PhysX 内部在 createLink 时缓存了基于旧 parentPose 的约束状态，setParentPose 没刷新这些缓存——solver 初始化时读到不一致的内部状态，导致 NaN。不管根因的 PhysX 内部细节如何，结论（此路线终止）不变。
 
 **为什么 Isaac Sim 可以**：见 §3。
 
@@ -133,27 +133,11 @@ Isaac 的路径：
 
 **我们不缺数据**——MJCF `<body pos quat>` 就是 parentPose 的值，`<joint pos="0 0 0">` 就是 childPose 的值。但裸 `createLink` API 把这两个概念绑死了。
 
-### 3.4 为什么 T3 的 setParentPose 在 Issac Sim 有效在我们无效
+### 3.4 为什么 T3 的 setParentPose 在 Isaac Sim 有效在我们无效
 
-Isaac 在 `createLink` 之后立即 `setParentPose` → 此时 articulation 还没加入场景 → PhysX 允许修改 joint frame → `addArticulation` 时 solver 用修正后的正确 joint frame 初始化约束。**Isaac 不需要 updateKinematic 传播**——它的 body 初始位置来自 USD，和 joint frame 从一开始就是独立设置的。
+Isaac 在 `createLink` 之后立即 `setParentPose` → 此时 articulation 还没加入场景 → PhysX 允许修改 joint frame → `addArticulation` 时 solver 用修正后的正确 joint frame 初始化约束。**Isaac 不需要 updateKinematic 传播**——它的 body 初始位置来自 USD，和 joint frame 从一开始就是独立设置的，两份数据都正确。
 
-而我们：`createLink(world)` 设置的 body 初始位置是基于错误 parentPose 推导的，`setParentPose` 改 joint frame 后 body 位置没更新。solver 看到矛盾——joint 锚点位置 vs body 当前位置不一致。
-
-### 3.5 一个未验证的方案：修改 createLink 的 pose 参数
-
-子 agent 提出了一个数学方案，不在 `createLink` 之后修 joint frame，而是**改 createLink 传入的 pose 值**来补偿 CoM 偏移：
-
-```
-当前传入：  pose = parent_world × child_local
-建议传入：  pose' = parent_world × child_local × child_CoM
-```
-
-理论效果：
-- body 初始位置 → 更接近正确值（消掉 childCoM⁻¹ 偏移）
-- FK 误差 → 可能从 3.15m 降到 ~5cm
-- 物理约束 → child CoM 偏移仅引入 cm 级 joint anchor 偏差，kp=99 可压住
-
-**未验证**，优先级低于 P0/P1。
+而我们：`createLink(world)` 传入的 body 位置是正确的（world_poses 累积），但 createLink 内部用 identity CoM 计算并缓存了错误的 parentPose。之后 `setCMassLocalPose(real)` 改 CoM 但已存储的 parentPose 没重算。`setParentPose(correct)` 把每个 joint frame 单独修正为正确值——理论上此时 body 位置和 joint frame 应该一致：`child_body = parent_body × parentPose_correct × R`，在 θ=0 时确实等于正确的世界坐标。但 solver 还是炸了——可能的原因是 setParentPose 之后 PhysX 内部的约束缓存/预处理状态未刷新，或者 setParentPose 在 parentCoM frame 下的坐标系语义与 createLink 时（CoM=Identity）推导的 frame 不一致，深链时累积偏差。不管具体根因，G1 实验结果（NaN @ step 11）是确定的，此路线终止。
 
 ## 4. 关键技术认知
 
