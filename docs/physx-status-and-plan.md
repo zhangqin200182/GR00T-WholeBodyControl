@@ -86,19 +86,21 @@ MJCF XML → physx_loader.py → physx_bindings.cpp (pybind11) → PhysX 5.4 C++
 | T2: Python FK 统一观测 | ✅ 替代所有 getGlobalPose |
 | T3: Joint frame fix | ✅ 不需要修复 — createLink 是对的 |
 | T4: Ref PD 验证 | ✅ α=0.0016-0.0055 |
-| Multi-process | ✅ fork+import 方案 |
-| Collision shapes | ✅ MJCF geom → PhysX shapes |
-| eACCELERATION | ✅ 已提交 |
+| eACCELERATION | ✅ 已提交 (e40ca04) |
+| kp 缩放集成到 loader | ✅ 已提交 (41f040a) |
+| Collision shapes + smoke test | ✅ drop test + static hold pass |
+| Multi-process + eACCELERATION | ✅ fork+import, 4 workers stable 200 steps |
+| PPO smoke test (直接 API) | ✅ 50 iter × 64 step, no NaN, healthy entropy |
 
 ## 5. 待办
 
 | 任务 | 优先级 | 说明 |
 |------|--------|------|
-| kp 缩放集成到 physx_env.py | P0 | 实现 per-joint-type 缩放逻辑 |
-| 碰撞 smoke test | P0 | 确认 geom shapes 在 step 中正常工作 |
-| 多进程 eACCELERATION 验证 | P0 | 确认 fork+import + eACCELERATION 稳定 |
-| 端到端 PPO smoke test | P1 | BC warmup + PPO 100 iter |
-| 配置对齐 Isaac (alive_bonus, thresholds) | P1 | 见 mujoco-isaac-gap-audit |
+| 文档清理 | ✅ | alpha-root-cause-analysis.md v2.0 已精简，删除过时 eFORCE 分析 |
+| 多 worker PPO training | P1 | 基于 mujoco_env_manager.py SHM+barrier 模式并行 rollout |
+| kd/ζ 调优实验 | P2 | 测试 ζ=0.3-0.5 对 Hard 段影响 |
+| 细化 kp 分组 | P2 | 验证 ankle/wrist 是否需要单独分组 |
+| 配置对齐 Isaac (alive_bonus, thresholds) | P2 | 见 mujoco-isaac-gap-audit |
 
 ## 6. 历史文档
 
