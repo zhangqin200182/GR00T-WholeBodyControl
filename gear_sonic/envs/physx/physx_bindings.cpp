@@ -154,6 +154,10 @@ struct Articulation {
     void set_joint_parent_pose(int joint_idx, py::array_t<float> pos, py::array_t<float> quat);
     void set_joint_child_pose(int joint_idx, py::array_t<float> pos, py::array_t<float> quat);
 
+    // Route B: manual per-substep PD (bypass articulation drive)
+    // Applies world-space torque to link[link_idx] via PxRigidBody::addTorque
+    void add_link_torque(int link_idx, float x, float y, float z);
+
     // Shapes
     void attach_sphere(int lidx, float r, py::array_t<float> p, py::array_t<float> q);
     void attach_box(int lidx, float hx,float hy,float hz, py::array_t<float> p, py::array_t<float> q);
@@ -287,11 +291,16 @@ void Articulation::finalize(
         PxArticulationLink *parent = (p>=0) ? links[p] : nullptr;
         links[i] = ptr->createLink(parent, world_poses[i]);
         if(!links[i]) throw std::runtime_error("createLink failed: "+link_names[i]);
+
         links[i]->setMass(mb(i));
         links[i]->setMassSpaceInertiaTensor(PxVec3(ib(i*3),ib(i*3+1),ib(i*3+2)));
         links[i]->setCMassLocalPose(PxTransform(
             PxVec3(cmpb(i*3),cmpb(i*3+1),cmpb(i*3+2)),
             PxQuat(cmqb(i*4+1),cmqb(i*4+2),cmqb(i*4+3),cmqb(i*4+0))));
+
+        // NOTE: setParentPose/setChildPose tested (T3, Route A variants)
+        // — all cause NaN.  createLink(world_poses) joint frame is what
+        // PhysX uses internally; we cannot change it safely.
     }
 
     // Configure joints (joint i connects the non-root link i+1 to its parent)
@@ -317,7 +326,7 @@ void Articulation::finalize(
         drive.stiffness = drive_cfgs[i].kp;
         drive.damping   = drive_cfgs[i].kd;
         drive.maxForce  = drive_cfgs[i].force;
-        drive.driveType = PxArticulationDriveType::eFORCE;
+        drive.driveType = PxArticulationDriveType::eACCELERATION;
         joint->setDriveParams(ax, drive);
     }
 
@@ -383,7 +392,7 @@ void Articulation::set_joint_drive_params(int idx, float kp, float kd, float fl)
     if(!ptr) throw std::runtime_error("not finalized");
     if(idx<0||idx>=(int)joints.size()) throw std::out_of_range("joint index");
     PxArticulationDrive d; d.stiffness=kp; d.damping=kd; d.maxForce=fl;
-    d.driveType=PxArticulationDriveType::eFORCE;
+    d.driveType=PxArticulationDriveType::eACCELERATION;
     joints[idx]->setDriveParams(joint_axes[idx], d);
 }
 void Articulation::set_solver_iterations(int pi, int vi) {
@@ -401,6 +410,12 @@ void Articulation::set_joint_child_pose(int joint_idx, py::array_t<float> pos, p
     if(joint_idx<0||joint_idx>=(int)joints.size()) throw std::out_of_range("joint index");
     PxTransform cp(np_to_v3(pos), np_to_quat(quat));
     joints[joint_idx]->setChildPose(cp);
+}
+
+void Articulation::add_link_torque(int link_idx, float x, float y, float z) {
+    if(!ptr) throw std::runtime_error("not finalized");
+    if(link_idx<0||link_idx>=(int)links.size()) throw std::out_of_range("link index");
+    links[link_idx]->addTorque(PxVec3(x, y, z));
 }
 
 // ── Shapes ──
@@ -475,6 +490,8 @@ PYBIND11_MODULE(physx_core, m) {
              py::arg("joint_idx"),py::arg("pos"),py::arg("quat"))
         .def("set_joint_child_pose",&Articulation::set_joint_child_pose,
              py::arg("joint_idx"),py::arg("pos"),py::arg("quat"))
+        .def("add_link_torque",&Articulation::add_link_torque,
+             py::arg("link_idx"),py::arg("x"),py::arg("y"),py::arg("z"))
         .def("attach_sphere",&Articulation::attach_sphere,
              py::arg("link_idx"),py::arg("radius"),py::arg("pos"),py::arg("quat"))
         .def("attach_box",&Articulation::attach_box,
