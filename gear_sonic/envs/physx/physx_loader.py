@@ -25,11 +25,40 @@ _ISAAC_PD = {
 }
 
 
+# eACCELERATION kp scaling by joint group.
+# Isaac base kp (14-99) is too small for raw PhysX 5 eACCELERATION because
+# raw PhysX uses kp directly as an acceleration gain (1/s²), while Isaac's
+# omni.physx applies internal inertia normalization (τ = I × kp × ε).
+# Scale factors determined by sweep (scripts/sweep_accel_kp.py):
+#   legs ×10k, waist ×10k, arms ×200k
+_ACCEL_KP_SCALE = {
+    "hip": 10000, "knee": 10000, "ankle": 10000,
+    "waist": 10000,
+    "shoulder": 200000, "elbow": 200000, "wrist": 200000,
+}
+_KD_FRAC = 0.4  # ζ = kd/(2√kp) in acceleration domain
+
+
 def _isaac_pd_gains(jname):
+    """Return Isaac Sim base PD gains (kp in Nm/rad, kd in Nm/(rad/s)) —
+    BEFORE eACCELERATION scaling."""
     for pattern, gains in _ISAAC_PD.items():
         if pattern in jname:
             return gains
     return (100.0, 5.0)
+
+
+def _scaled_pd_gains(jname):
+    """Return PD gains scaled for eACCELERATION drive type.
+
+    Base kp → kp × group_scale, kd → √(scaled_kp) × _KD_FRAC."""
+    kp, _kd = _isaac_pd_gains(jname)
+    for pattern, scale in _ACCEL_KP_SCALE.items():
+        if pattern in jname:
+            kp *= scale
+            break
+    kd = np.sqrt(kp) * _KD_FRAC
+    return kp, kd
 
 
 def _fix_joint_frames(art, parser):
@@ -278,7 +307,7 @@ class _MJCFParser:
             # actuatorfrcrange on the joint is the source of truth
             pass
 
-        kp, kd = _isaac_pd_gains(jname)
+        kp, kd = _scaled_pd_gains(jname)
 
         # Joint connects parent_idx → child_idx
         art.add_joint(parent_idx, child_idx, axis_enum,
