@@ -32,11 +32,18 @@ _ISAAC_PD = {
 # Scale factors determined by sweep (scripts/sweep_accel_kp.py):
 #   legs ×10k, waist ×10k, arms ×200k
 _ACCEL_KP_SCALE = {
-    "hip": 10000, "knee": 10000, "ankle": 10000,
+    "hip": 15000, "knee": 15000, "ankle": 15000,
     "waist": 10000,
-    "shoulder": 200000, "elbow": 200000, "wrist": 200000,
+    "shoulder": 100000, "elbow": 100000, "wrist": 100000,
 }
-_KD_FRAC = 0.4  # ζ = kd/(2√kp) in acceleration domain
+# Per-group damping ratio ζ = kd/(2√kp) in acceleration domain.
+# Determined by sweep: legs prefer overdamped (0.8), arms prefer critical (1.0),
+# waist stays at 0.4 (higher values degrade due to coupling).
+_DAMPING_ZETA = {
+    "hip": 0.8, "knee": 0.8, "ankle": 0.8,
+    "waist": 0.4,
+    "shoulder": 1.0, "elbow": 1.0, "wrist": 1.0,
+}
 
 
 def _isaac_pd_gains(jname):
@@ -51,13 +58,18 @@ def _isaac_pd_gains(jname):
 def _scaled_pd_gains(jname):
     """Return PD gains scaled for eACCELERATION drive type.
 
-    Base kp → kp × group_scale, kd → √(scaled_kp) × _KD_FRAC."""
+    kp → kp × group_scale, kd → 2ζ√(scaled_kp) with per-group ζ."""
     kp, _kd = _isaac_pd_gains(jname)
     for pattern, scale in _ACCEL_KP_SCALE.items():
         if pattern in jname:
             kp *= scale
             break
-    kd = np.sqrt(kp) * _KD_FRAC
+    zeta = 0.4  # fallback
+    for pattern, z in _DAMPING_ZETA.items():
+        if pattern in jname:
+            zeta = z
+            break
+    kd = 2 * zeta * np.sqrt(kp)
     return kp, kd
 
 

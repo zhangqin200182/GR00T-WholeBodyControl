@@ -438,9 +438,9 @@ class PhysXEnv:
         ref_h = ref_root_pos[2]; root_h = root_pos[2]
         term = False; h_thresh = 0.75 if ref_h < 0.5 else 0.15
 
-        _ORI_THRESH = 0.5   # relaxed from 0.2 for PhysX reduced-coordinate accuracy
-        _ANK_POS_THRESH = 0.5  # relaxed from 0.2 for PhysX
-        _ANK_H_MULT = 2.0  # relaxed from 1.0 for PhysX
+        _ORI_THRESH = 0.35  # relaxed from Isaac 0.2 (PhysX α=0.006 vs Isaac 0.002)
+        _ANK_POS_THRESH = 0.35
+        _ANK_H_MULT = 1.5
 
         if abs(ref_h - root_h) > h_thresh: term = True
         if quat_error_magnitude(ref_root_quat, root_quat)**2 > _ORI_THRESH: term = True
