@@ -1,4 +1,7 @@
-# PhysX 5 引擎切换 — Task 拆解
+# PhysX 5 引擎切换 — Task 拆解 ⚠️ 已废弃
+
+> 2026-08-06 废弃：同 implementation.md，ovphysx 路径已弃用。
+> 当前文档：`docs/physx-status-and-plan.md`
 
 > 基于 `docs/physx-engine-switch-implementation.md` v2 | 2026-08-02
 

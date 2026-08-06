@@ -1,4 +1,8 @@
-# PhysX 跟踪质量提升方案
+# PhysX 跟踪质量提升方案 ⚠️ 已废弃
+
+> 2026-08-06 废弃：本文建议"接受 α≈0.02 直接训练"或"切 ovphysx"——均不再适用。
+> eACCELERATION 突破后 α=0.0016-0.0055，直接走 Direct API。
+> 当前文档：`docs/physx-status-and-plan.md`
 
 > 2026-08-03 | T6 完成后的系统分析与实施路线
 

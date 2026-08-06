@@ -1,4 +1,8 @@
-# PhysX 5 引擎切换 — 详细实施方案 v2
+# PhysX 5 引擎切换 ⚠️ 已废弃
+
+> 2026-08-06 废弃：本文基于 ovphysx (pip install) 方案，因 ovphysx 硬编码 eFORCE 已弃用。
+> 最终方案：Direct API (physx_bindings.cpp) + eACCELERATION，α=0.0016-0.0055。
+> 当前文档：`docs/physx-status-and-plan.md`
 
 > 状态：待审查 | 2026-08-02 | 修订：代码审查后修正 7 项问题
 
