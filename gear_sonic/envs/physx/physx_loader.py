@@ -114,7 +114,7 @@ def _parse_quat(s):
     return np.array([1, 0, 0, 0], dtype=np.float32)
 
 
-def load_g1(px, xml_path, pos_iters=8, vel_iters=1):
+def load_g1(px, xml_path, pos_iters=8, vel_iters=1, drive_type="ACCELERATION"):
     """Load G1 robot from MJCF XML into a PhysX articulation.
 
     Args:
@@ -122,6 +122,7 @@ def load_g1(px, xml_path, pos_iters=8, vel_iters=1):
         xml_path: Path to g1_29dof_v17.xml
         pos_iters: Solver position iterations (default 8, try 16/32 for precision)
         vel_iters: Solver velocity iterations (default 1, try 2/4 for precision)
+        drive_type: "ACCELERATION" (default) or "FORCE"
 
     Returns:
         px.Articulation (finalized, ready to add to scene)
@@ -182,6 +183,7 @@ def load_g1(px, xml_path, pos_iters=8, vel_iters=1):
         joint_friction=jt_fric,
         position_iters=pos_iters,
         velocity_iters=vel_iters,
+        drive_type=drive_type,
     )
 
     # setParentPose fix DISABLED: it improves PhysX FK (getGlobalPose) from

@@ -131,7 +131,8 @@ struct Articulation {
                   py::array_t<int> joint_axis_arr,
                   py::array_t<float> joint_lower, py::array_t<float> joint_upper,
                   py::array_t<float> joint_friction,
-                  int pos_iters, int vel_iters);
+                  int pos_iters, int vel_iters,
+                  const std::string& drive_type_str);
 
     // State
     py::array_t<float> get_joint_positions();
@@ -144,10 +145,12 @@ struct Articulation {
     int  num_links()  const { return (int)links.size(); }
 
     void set_root_world_pose(py::array_t<float> p, py::array_t<float> q);
+    void set_root_world_velocity(py::array_t<float> lin, py::array_t<float> ang);
     void set_joint_positions(py::array_t<float> qpos);
     void set_joint_velocities(py::array_t<float> qvel);
     void set_joint_drive_targets(py::array_t<float> targets);
-    void set_joint_drive_params(int idx, float kp, float kd, float force_limit);
+    void set_joint_drive_params(int idx, float kp, float kd, float force_limit,
+                                const std::string& drive_type_str);
     void set_solver_iterations(int pi, int vi);
 
     // Joint frame correction (T3: fix parentPose/childPose after createLink)
@@ -236,6 +239,12 @@ void Articulation::add_joint(int parent_idx, int child_idx, int axis,
     drive_cfgs.push_back({kp, kd, force_limit});
 }
 
+// Parse drive type string → enum
+static PxArticulationDriveType::Enum parse_drive_type(const std::string& s) {
+    if(s=="FORCE") return PxArticulationDriveType::eFORCE;
+    return PxArticulationDriveType::eACCELERATION; // default
+}
+
 void Articulation::finalize(
     py::array_t<float> mass_arr, py::array_t<float> inert_arr,
     py::array_t<float> pos_arr, py::array_t<float> quat_arr,
@@ -244,7 +253,8 @@ void Articulation::finalize(
     py::array_t<int> axis_arr,
     py::array_t<float> lower_arr, py::array_t<float> upper_arr,
     py::array_t<float> fric_arr,
-    int pos_iters, int vel_iters)
+    int pos_iters, int vel_iters,
+    const std::string& drive_type_str)
 {
     if(ptr) throw std::runtime_error("already finalized");
     if(!g_physics) throw std::runtime_error("call init_foundation() first");
@@ -326,7 +336,7 @@ void Articulation::finalize(
         drive.stiffness = drive_cfgs[i].kp;
         drive.damping   = drive_cfgs[i].kd;
         drive.maxForce  = drive_cfgs[i].force;
-        drive.driveType = PxArticulationDriveType::eACCELERATION;
+        drive.driveType = parse_drive_type(drive_type_str);
         joint->setDriveParams(ax, drive);
     }
 
@@ -371,6 +381,11 @@ void Articulation::set_root_world_pose(py::array_t<float> p, py::array_t<float> 
     ptr->setRootGlobalPose(np_to_xf(p,q), false);
     ptr->updateKinematic(PxArticulationKinematicFlag::ePOSITION);
 }
+void Articulation::set_root_world_velocity(py::array_t<float> lin, py::array_t<float> ang) {
+    if(!ptr) throw std::runtime_error("not finalized");
+    ptr->setRootLinearVelocity(np_to_v3(lin), true);
+    ptr->setRootAngularVelocity(np_to_v3(ang), true);
+}
 void Articulation::set_joint_positions(py::array_t<float> qpos) {
     if(!ptr) throw std::runtime_error("not finalized");
     auto b=qpos.unchecked<1>(); int n=(int)joints.size();
@@ -388,11 +403,12 @@ void Articulation::set_joint_drive_targets(py::array_t<float> tgts) {
     auto b=tgts.unchecked<1>(); int n=(int)joints.size();
     for(int i=0;i<n;i++) joints[i]->setDriveTarget(joint_axes[i], b(i), true);
 }
-void Articulation::set_joint_drive_params(int idx, float kp, float kd, float fl) {
+void Articulation::set_joint_drive_params(int idx, float kp, float kd, float fl,
+                                          const std::string& drive_type_str) {
     if(!ptr) throw std::runtime_error("not finalized");
     if(idx<0||idx>=(int)joints.size()) throw std::out_of_range("joint index");
     PxArticulationDrive d; d.stiffness=kp; d.damping=kd; d.maxForce=fl;
-    d.driveType=PxArticulationDriveType::eACCELERATION;
+    d.driveType=parse_drive_type(drive_type_str);
     joints[idx]->setDriveParams(joint_axes[idx], d);
 }
 void Articulation::set_solver_iterations(int pi, int vi) {
@@ -468,7 +484,8 @@ PYBIND11_MODULE(physx_core, m) {
              py::arg("joint_axis"),
              py::arg("joint_lower"),py::arg("joint_upper"),
              py::arg("joint_friction"),
-             py::arg("position_iters")=8,py::arg("velocity_iters")=1)
+             py::arg("position_iters")=8,py::arg("velocity_iters")=1,
+             py::arg("drive_type")="ACCELERATION")
         .def("get_joint_positions",&Articulation::get_joint_positions)
         .def("get_joint_velocities",&Articulation::get_joint_velocities)
         .def("get_root_world_pose",&Articulation::get_root_world_pose)
@@ -479,11 +496,14 @@ PYBIND11_MODULE(physx_core, m) {
         .def_property_readonly("num_links",&Articulation::num_links)
         .def("set_root_world_pose",&Articulation::set_root_world_pose,
              py::arg("pos"),py::arg("quat"))
+        .def("set_root_world_velocity",&Articulation::set_root_world_velocity,
+             py::arg("lin"),py::arg("ang"))
         .def("set_joint_positions",&Articulation::set_joint_positions,py::arg("qpos"))
         .def("set_joint_velocities",&Articulation::set_joint_velocities,py::arg("qvel"))
         .def("set_joint_drive_targets",&Articulation::set_joint_drive_targets,py::arg("targets"))
         .def("set_joint_drive_params",&Articulation::set_joint_drive_params,
-             py::arg("idx"),py::arg("kp"),py::arg("kd"),py::arg("force_limit"))
+             py::arg("idx"),py::arg("kp"),py::arg("kd"),py::arg("force_limit"),
+             py::arg("drive_type")="ACCELERATION")
         .def("set_solver_iterations",&Articulation::set_solver_iterations,
              py::arg("pos_iters"),py::arg("vel_iters"))
         .def("set_joint_parent_pose",&Articulation::set_joint_parent_pose,
