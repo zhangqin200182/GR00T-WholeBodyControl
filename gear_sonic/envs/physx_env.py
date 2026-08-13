@@ -112,6 +112,7 @@ class PhysXEnv:
         self.ank_pos_thresh = getattr(config, "ank_pos_thresh", 0.2) if config else 0.2
         self.ank_h_mult = getattr(config, "ank_h_mult", 1.0) if config else 1.0
         self.action_trust = getattr(config, "action_trust", 1.0) if config else 1.0
+        self.height_hinge_weight = getattr(config, "height_hinge_weight", 0.0) if config else 0.0
 
         # ── Motions ──
         self.motions = self._load_motions(pkl_dir)
@@ -158,9 +159,13 @@ class PhysXEnv:
         self._ref_root_trans = m["root_trans_offset"].astype(np.float64)
         self._ref_fps = m.get("fps", 30.0)
         self._ref_dt = 1.0 / self._ref_fps
+        # Offset applies in walking mode too: mocap root-z is not physically
+        # consistent with G1 leg geometry (feet hover 25-35mm above ground at
+        # reset). Without it every episode starts with a free-fall transient
+        # that eats into the height-termination budget.
+        if self._root_z_offset != 0.0:
+            self._ref_root_trans[:, 2] += self._root_z_offset
         if self._static_pose:
-            if self._root_z_offset != 0.0:
-                self._ref_root_trans[:, 2] += self._root_z_offset
             self._ref_time = 0.0
         else:
             max_time = (n - self.max_ep - 1) * self._ref_dt
@@ -393,7 +398,19 @@ class PhysXEnv:
         r12 = -2.5e-6 * self._feet_acc()
         r13 = self.alive_bonus
 
-        return float(r1+r2+r3+r4+r5+r6+r7+r8+r9+r10+r11+r12+r13)
+        # Height hinge: r1's Gaussian (sigma 0.09) still pays 39% of max at
+        # dh=150mm, so root-height sink is barely penalized — yet it is the
+        # dominant termination cause under PhysX (75% of falls).  This term
+        # rewards full value at perfect height and ramps linearly to 0 at the
+        # active termination threshold, giving a constant gradient where r1's
+        # vanishes.  Default 0.0 keeps eval scripts on the original reward.
+        r14 = 0.0
+        if self.height_hinge_weight > 0.0:
+            h_thresh = 0.75 if ref_root_pos[2] < 0.5 else 0.15
+            dh = abs(root_pos[2] - ref_root_pos[2])
+            r14 = self.height_hinge_weight * max(0.0, 1.0 - dh / h_thresh)
+
+        return float(r1+r2+r3+r4+r5+r6+r7+r8+r9+r10+r11+r12+r13+r14)
 
     def _undesired_contact(self):
         # TODO: implement via scene.get_contacts() once T3 adds the API

@@ -417,6 +417,8 @@ def main(config: OmegaConf):
             env_config_dict["ank_h_mult"] = float(os.environ["SONIC_PHYSX_ANK_H_MULT"])
         if os.environ.get("SONIC_PHYSX_ACTION_TRUST"):
             env_config_dict["action_trust"] = float(os.environ["SONIC_PHYSX_ACTION_TRUST"])
+        if os.environ.get("SONIC_PHYSX_HEIGHT_HINGE"):
+            env_config_dict["height_hinge_weight"] = float(os.environ["SONIC_PHYSX_HEIGHT_HINGE"])
         if is_enc_adapt or skip_term:
             env_config_dict["skip_termination"] = True
             logger.info(f"PhysX skip_termination=True (enc_adapt={is_enc_adapt}, skip_term={skip_term})")
@@ -426,7 +428,8 @@ def main(config: OmegaConf):
         logger.info(f"PhysX thresholds: ori={env_config_dict.get('ori_thresh', 0.2)}, "
                     f"ank_pos={env_config_dict.get('ank_pos_thresh', 0.2)}, "
                     f"ank_h_mult={env_config_dict.get('ank_h_mult', 1.0)}, "
-                    f"action_trust={env_config_dict.get('action_trust', 1.0)}")
+                    f"action_trust={env_config_dict.get('action_trust', 1.0)}, "
+                    f"height_hinge={env_config_dict.get('height_hinge_weight', 0.0)}")
         env = PhysXEnvManager(
             num_envs=local_envs,
             num_workers=int(os.environ.get("SONIC_PHYSX_WORKERS", "1024")) // accelerator.num_processes,
