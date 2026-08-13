@@ -2233,6 +2233,12 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
                         cur_value = getattr(self, key)
                         if cur_value.shape != value.shape:
                             continue
+                        # torch_npu relands old-format tensors on load with a Byte
+                        # backing storage that breaks copy.deepcopy at checkpoint
+                        # save; rebuild with a fresh, properly typed storage.
+                        value = torch.empty(
+                            value.shape, dtype=value.dtype, device=value.device
+                        ).copy_(value)
                         setattr(self, key, value)
                     if key not in [
                         "stateful_callbacks",
