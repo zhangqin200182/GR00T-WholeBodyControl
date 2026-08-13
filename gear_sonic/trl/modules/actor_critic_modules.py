@@ -138,6 +138,7 @@ class Actor(nn.Module):
         self.dones_buffer = None
         self.steps = 0
         self.is_eval_mode = False
+        self.deterministic_rollout = algo_config.get("deterministic_rollout", False)
 
     def reset(self, dones=None):
         pass
@@ -420,16 +421,19 @@ class Actor(nn.Module):
             ``action_mean``, ``action_sigma``, and optionally ``obs_dict``.
         """
         episode_attnmask = self._update_obs_buffer(obs_dict, episode_attnmask, cur_dones)
+        is_training = kwargs.pop("is_training", self.deterministic_rollout)
         self.update_distribution(
             obs_dict=self.obs_dict_buffer,
             episode_attnmask=episode_attnmask,
             last_step_only=True,
+            is_training=is_training,
             **kwargs,
         )
         self.steps += 1
+        actions = self.action_mean if self.deterministic_rollout else self.distribution.sample()
         return TensorDict(
             {
-                "actions": self.distribution.sample(),
+                "actions": actions,
                 "action_mean": self.action_mean,
                 "action_sigma": self.action_std,
                 "obs_dict": self.obs_dict_buffer if self.output_original_obs_dict else None,

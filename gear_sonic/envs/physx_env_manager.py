@@ -19,7 +19,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # SHM layout per env — identical to mujoco_env_manager.py
-OBS_DIM = 4336       # actor(930) + critic(1645) + tokenizer(1761)
+OBS_DIM = 4365       # actor(930) + critic(1645) + tokenizer(1761) + ref_action(29)
 ACT_DIM = 29
 OBS_BYTES = OBS_DIM * 4       # float32
 ACT_BYTES = ACT_DIM * 4
@@ -57,26 +57,28 @@ class EnvSharedMemory:
         return self._names.copy()
 
     def write_obs(self, env_id, obs_dict):
-        flat = np.concatenate([obs_dict["actor_obs"], obs_dict["critic_obs"], obs_dict["tokenizer"]])
+        flat = np.concatenate([obs_dict["actor_obs"], obs_dict["critic_obs"], obs_dict["tokenizer"], obs_dict["ref_action"]])
         self._obs[env_id] = flat
 
     def write_terminal(self, env_id, obs_dict):
         if obs_dict is not None:
-            flat = np.concatenate([obs_dict["actor_obs"], obs_dict["critic_obs"], obs_dict["tokenizer"]])
+            flat = np.concatenate([obs_dict["actor_obs"], obs_dict["critic_obs"], obs_dict["tokenizer"], obs_dict["ref_action"]])
             self._terminal[env_id] = flat
 
     def read_obs(self):
         return {
             "actor_obs": self._obs[:, :930].copy(),
             "critic_obs": self._obs[:, 930:2575].copy(),
-            "tokenizer": self._obs[:, 2575:].copy(),
+            "tokenizer": self._obs[:, 2575:4336].copy(),
+            "ref_action": self._obs[:, 4336:4365].copy(),
         }
 
     def read_terminal(self):
         return {
             "actor_obs": self._terminal[:, :930].copy(),
             "critic_obs": self._terminal[:, 930:2575].copy(),
-            "tokenizer": self._terminal[:, 2575:].copy(),
+            "tokenizer": self._terminal[:, 2575:4336].copy(),
+            "ref_action": self._terminal[:, 4336:4365].copy(),
         }
 
     def read_rewards(self):
@@ -169,17 +171,24 @@ def _to_numpy(x):
 
 
 def _worker_loop(worker_id, start_env, num_envs, shm_names, barrier,
-                 model_xml, pkl_dir, env_config=None):
+                 model_xml, pkl_dir, env_config=None,
+                 static_pose=False, root_z_offset=0.0, standing_prob=0.0):
     """Worker process entry point.
 
     Each worker:
     1. Imports physx_core + init_foundation() (MUST run before any PhysX API call)
     2. Creates N PhysXEnv instances (each with independent Scene + Articulation + FK)
     3. Barriers-syncs with trainer: wait→step→wait loop
+
+    To keep per-step latency low, keep num_envs per worker ≤ 8.
+    Create many workers (512+) via physx_workers config instead.
     """
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     # ── PhysX init (per-process, after fork) ──
+    import sys
+    _build_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'physx', 'build')
+    sys.path.insert(0, _build_dir)
     import physx_core
     px = physx_core
     px.init_foundation()
@@ -208,15 +217,15 @@ def _worker_loop(worker_id, start_env, num_envs, shm_names, barrier,
 
     # ── Create envs ──
     envs = [PhysXEnv(px, model_xml, pkl_dir, config=env_config,
-                     native_dt=0.001961, decimation=10, pos_iters=8, vel_iters=1)
+                     native_dt=0.001961, decimation=10, pos_iters=8, vel_iters=1,
+                     static_pose=static_pose, root_z_offset=root_z_offset,
+                     standing_prob=standing_prob)
             for _ in range(num_envs)]
 
     # ── Initial reset ──
     for i, env in enumerate(envs):
         obs = env.reset()
-        obs_buf[i] = np.concatenate([obs["actor_obs"], obs["critic_obs"], obs["tokenizer"]])
-
-    nan_count = 0  # track NaN events per worker
+        obs_buf[i] = np.concatenate([obs["actor_obs"], obs["critic_obs"], obs["tokenizer"], obs["ref_action"]])
 
     while True:
         barrier.wait()
@@ -226,31 +235,25 @@ def _worker_loop(worker_id, start_env, num_envs, shm_names, barrier,
         for i, env in enumerate(envs):
             obs, reward, done, info = env.step(actions[i])
 
-            # NaN guard: eACCELERATION can produce extreme joint forces that
-            # explode numerically.  Reset poisoned env before NaN propagates
-            # through SHM → trainer → policy → all other envs.
             if np.isnan(reward) or any(np.isnan(v).any() for v in obs.values()):
-                nan_count += 1
                 obs = env.reset()
                 reward = 0.0
-                done = True  # GAE bootstraps from fresh reset obs value
+                done = True
                 info = {"time_outs": False, "_orig_done": True}
-                # terminal_obs NOT written — stale buffer is harmless
-                # (trainer only consumes it when use_symmetry=True, off by default)
 
-            flat = np.concatenate([obs["actor_obs"], obs["critic_obs"], obs["tokenizer"]])
+            flat = np.concatenate([obs["actor_obs"], obs["critic_obs"], obs["tokenizer"], obs["ref_action"]])
             obs_buf[i] = flat
             rew_buf[i] = reward
             done_buf[i] = int(done)
             to_buf[i] = int(info.get("time_outs", False))
             orig_done_buf[i] = int(info.get("_orig_done", done))
             if info.get("terminal_obs") is not None:
-                tflat = np.concatenate([
+                terminal_buf[i] = np.concatenate([
                     info["terminal_obs"]["actor_obs"],
                     info["terminal_obs"]["critic_obs"],
                     info["terminal_obs"]["tokenizer"],
+                    info["terminal_obs"]["ref_action"],
                 ])
-                terminal_buf[i] = tflat
 
         barrier.wait()
 
@@ -265,12 +268,17 @@ class PhysXEnvManager:
     BARRIER_TIMEOUT = 120
     TOTAL_OBS_DIM = OBS_DIM
 
-    def __init__(self, num_envs, num_workers, model_xml, pkl_dir, env_config=None):
+    def __init__(self, num_envs, num_workers, model_xml, pkl_dir, env_config=None,
+                 static_pose=False, root_z_offset=0.0, standing_prob=0.0):
         self.num_envs = num_envs
         self.num_workers = num_workers
         self.model_xml = model_xml
         self.pkl_dir = pkl_dir
         self.env_config = env_config
+        self.static_pose = static_pose
+        self.root_z_offset = root_z_offset
+        self.standing_prob = standing_prob
+        self.is_evaluating = False
 
         # Distribute envs across workers
         envs_per_worker = math.ceil(num_envs / num_workers)
@@ -298,7 +306,8 @@ class PhysXEnvManager:
             p = mp.Process(
                 target=_worker_loop,
                 args=(worker_id, start, n, self._shm.names, self._barrier,
-                      model_xml, pkl_dir, env_config),
+                      model_xml, pkl_dir, env_config, self.static_pose, self.root_z_offset,
+                      self.standing_prob),
                 daemon=True,
             )
             p.start()
@@ -317,7 +326,8 @@ class PhysXEnvManager:
         self.env = self._EnvStub()
         self.extras = {}
 
-        logger.info(f"PhysXEnvManager: {num_envs} envs × {self._actual_workers} workers")
+        envs_per_w = math.ceil(num_envs / self._actual_workers) if self._actual_workers else 0
+        logger.info(f"PhysXEnvManager: {num_envs} envs × {self._actual_workers} workers ({envs_per_w} envs/worker)")
 
     class _EnvStub:
         observation_space = {
@@ -382,10 +392,10 @@ class PhysXEnvManager:
     # ── Stub methods for PPO trainer compatibility ───────────────────────
 
     def set_is_evaluating(self, is_evaluating=True, log_info=False, **kwargs):
-        pass
+        self.is_evaluating = is_evaluating
 
     def set_is_training(self, **_kwargs):
-        pass
+        self.is_evaluating = False
 
     def sync_and_compute_adaptive_sampling(self, *args, **kwargs):
         pass
@@ -417,7 +427,9 @@ class PhysXEnvManager:
             if n > 0:
                 p = mp.Process(target=_worker_loop,
                                args=(i, start, n, self._shm.names, self._barrier,
-                                     self.model_xml, self.pkl_dir, self.env_config),
+                                     self.model_xml, self.pkl_dir, self.env_config,
+                                     self.static_pose, self.root_z_offset,
+                                     self.standing_prob),
                                daemon=True)
                 p.start()
                 self._workers.append(p)

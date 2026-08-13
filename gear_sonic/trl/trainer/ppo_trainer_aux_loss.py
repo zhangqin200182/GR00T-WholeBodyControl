@@ -43,6 +43,10 @@ class TRLAuxLossPPOTrainer(TRLPPOTrainer):
         self.aux_loss_scale = self.config.get("aux_loss_scale", 1.0)
         self.compute_aux_loss = self.config.get("compute_aux_loss", True)
 
+        # BC loss: MSE(policy action_mean, reference qpos)
+        self.compute_bc_loss = self.config.get("compute_bc_loss", False)
+        self.bc_loss_coef = self.config.get("bc_loss_coef", 1.0)
+
     def _register_stats_buffer(self):
         """Allocate per-step statistics tensors for auxiliary losses.
 
@@ -182,6 +186,14 @@ class TRLAuxLossPPOTrainer(TRLPPOTrainer):
         # Compute PPO loss (includes ppo_loss and optionally imgaug_bc_loss)
         loss_dict = super()._compute_loss(forward_results, mb_rollout_data)
 
+        # BC loss: MSE(policy action_mean, reference qpos)
+        if self.compute_bc_loss:
+            action_mean = forward_results["policy_results"]["action_mean"]
+            ref_action = mb_rollout_data["mb_obs_dict"]["ref_action"]
+            bc_loss = torch.nn.functional.mse_loss(action_mean, ref_action)
+            loss_dict["loss"] += bc_loss * self.bc_loss_coef
+            loss_dict["bc_loss"] = bc_loss
+
         # Compute and add auxiliary loss if enabled
         if self.compute_aux_loss:
             aux_loss_result = self._compute_aux_loss(
@@ -234,6 +246,21 @@ class TRLAuxLossPPOTrainer(TRLPPOTrainer):
             forward_results,
             mb_rollout_data,
         )
+
+        # Update BC loss stats
+        if self.compute_bc_loss and "bc_loss" in loss_dict:
+            if "bc_loss" not in self.aux_loss_stats:
+                args = self.args
+                device = self.accelerator.device
+                stats_shape = (
+                    args.num_ppo_epochs,
+                    args.num_mini_batches,
+                    args.num_micro_batches,
+                )
+                self.aux_loss_stats["bc_loss"] = torch.zeros(stats_shape, device=device)
+            self.aux_loss_stats["bc_loss"][
+                ppo_epoch_idx, minibatch_idx, microbatch_idx
+            ] = loss_dict["bc_loss"]
 
         # Update auxiliary loss stats if enabled
         if self.compute_aux_loss and "aux_loss_dict" in loss_dict:

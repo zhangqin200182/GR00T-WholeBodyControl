@@ -25,10 +25,15 @@ if _script_dir in sys.path:
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
 
+# PhysX fork safety: import PhysXEnvManager BEFORE torch/HCCL
+# so child processes don't inherit Ascend runtime state.
+if os.environ.get("SONIC_PHYSX_ENV"):
+    from gear_sonic.envs.physx_env_manager import PhysXEnvManager  # noqa: F401
+
 try:
     import isaaclab  # noqa: F401
 except ImportError:
-    if not os.environ.get("SONIC_STUB_ENV") and not os.environ.get("SONIC_MUJOCO_ENV"):
+    if not os.environ.get("SONIC_STUB_ENV") and not os.environ.get("SONIC_MUJOCO_ENV") and not os.environ.get("SONIC_PHYSX_ENV"):
         print(
             "\n"
             "ERROR: Isaac Lab is required for training but not installed.\n"
@@ -159,6 +164,7 @@ def create_manager_env(config, device, args_cli):
 def main(config: OmegaConf):
     if os.environ.get("SONIC_MUJOCO_ENV"): simulator_type = "MuJoCo"
     elif os.environ.get("SONIC_STUB_ENV"): simulator_type = "Stub"
+    elif os.environ.get("SONIC_PHYSX_ENV"): simulator_type = "PhysX"
     else: simulator_type = "IsaacSim"
     env_config = config.manager_env
     from transformers import HfArgumentParser
@@ -197,7 +203,10 @@ def main(config: OmegaConf):
         pass
 
     _mixed_precision = "no" if _is_npu else None
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
+    # When encoders or decoders are frozen (ENC_ADAPT / BC_ONLY), DDP must
+    # tolerate parameters that produce no gradient in the forward/backward pass.
+    _freeze_parts = bool(os.environ.get("SONIC_PHYSX_ENC_ADAPT") or os.environ.get("SONIC_PHYSX_BC_ONLY") or os.environ.get("SONIC_PHYSX_FREEZE_ENCODER"))
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=_freeze_parts)
     kwargs = InitProcessGroupKwargs(timeout=timedelta(seconds=6000))
     accelerator = Accelerator(
         gradient_accumulation_steps=training_args.gradient_accumulation_steps,
@@ -384,6 +393,64 @@ def main(config: OmegaConf):
         config_dict.setdefault("robot", {}).setdefault("algo_obs_dim_dict", {})
         # Convert back to OmegaConf — now all keys exist, struct mode is satisfied
         env.config = OmegaConf.create(config_dict, flags={"allow_objects": True})
+    elif os.environ.get("SONIC_PHYSX_ENV"):
+        from gear_sonic.envs.physx_env_manager import PhysXEnvManager
+        logger.info("Using PhysXEnvManager (PhysX 5 Direct API CPU physics)")
+        local_envs = config.num_envs // accelerator.num_processes
+        # Termination mode:
+        #   skip_termination: episode never ends (env._check_termination → False)
+        #     Used for encoder adaptation — bad for PPO (GAE bootstrap broken)
+        #   ignore_terminations: termination triggers env reset, but trainer
+        #     sees done=False. Finite episodes → GAE bootstraps normally.
+        #     Used for BC warmup / joint training — policy survives rollout
+        #     boundaries while still getting bounded-episode advantages.
+        is_enc_adapt = bool(os.environ.get("SONIC_PHYSX_ENC_ADAPT"))
+        skip_term = bool(os.environ.get("SONIC_PHYSX_SKIP_TERM"))
+        ignore_term = bool(os.environ.get("SONIC_PHYSX_IGNORE_TERM"))
+        env_config_dict = {"alive_bonus": 0.0}
+        # Gradual threshold tightening: overridable via env vars
+        if os.environ.get("SONIC_PHYSX_ORI_THRESH"):
+            env_config_dict["ori_thresh"] = float(os.environ["SONIC_PHYSX_ORI_THRESH"])
+        if os.environ.get("SONIC_PHYSX_ANK_POS_THRESH"):
+            env_config_dict["ank_pos_thresh"] = float(os.environ["SONIC_PHYSX_ANK_POS_THRESH"])
+        if os.environ.get("SONIC_PHYSX_ANK_H_MULT"):
+            env_config_dict["ank_h_mult"] = float(os.environ["SONIC_PHYSX_ANK_H_MULT"])
+        if os.environ.get("SONIC_PHYSX_ACTION_TRUST"):
+            env_config_dict["action_trust"] = float(os.environ["SONIC_PHYSX_ACTION_TRUST"])
+        if is_enc_adapt or skip_term:
+            env_config_dict["skip_termination"] = True
+            logger.info(f"PhysX skip_termination=True (enc_adapt={is_enc_adapt}, skip_term={skip_term})")
+        elif ignore_term:
+            env_config_dict["ignore_terminations"] = True
+            logger.info("PhysX ignore_terminations=True — env resets, trainer ignores done")
+        logger.info(f"PhysX thresholds: ori={env_config_dict.get('ori_thresh', 0.2)}, "
+                    f"ank_pos={env_config_dict.get('ank_pos_thresh', 0.2)}, "
+                    f"ank_h_mult={env_config_dict.get('ank_h_mult', 1.0)}, "
+                    f"action_trust={env_config_dict.get('action_trust', 1.0)}")
+        env = PhysXEnvManager(
+            num_envs=local_envs,
+            num_workers=int(os.environ.get("SONIC_PHYSX_WORKERS", "1024")) // accelerator.num_processes,
+            model_xml="/gear_sonic_deploy/g1/g1_29dof_v17.xml",
+            pkl_dir="/sample_data/robot_filtered",
+            env_config=OmegaConf.create(env_config_dict),
+        )
+        # Build config with all keys the model init needs
+        config_dict = OmegaConf.to_container(env_config, resolve=True)
+        config_dict.setdefault("obs", {}).setdefault("obs_dims", {})
+        config_dict.setdefault("obs", {})["obs_dict"] = {}
+        config_dict["obs"]["obs_dims"] = {"actor_obs": 930, "critic_obs": 1645, "tokenizer": 1761, "ref_action": 29}
+        config_dict["obs"]["group_obs_dims"] = {"tokenizer": TOKENIZER_OBS_DIMS}
+        config_dict["obs"]["group_obs_names"] = {"tokenizer": list(TOKENIZER_OBS_DIMS.keys())}
+        config_dict.setdefault("robot", {})["actions_dim"] = 29
+        config_dict["num_envs"] = config.num_envs
+        config_dict.setdefault("robot", {}).setdefault("algo_obs_dim_dict", {})
+        env.config = OmegaConf.create(config_dict, flags={"allow_objects": True})
+        # BC loss: MSE(policy action_mean, reference qpos) — direct behavioral supervision for decoder
+        if os.environ.get("SONIC_PHYSX_BC_COEF"):
+            bc_coef = float(os.environ["SONIC_PHYSX_BC_COEF"])
+            OmegaConf.update(config.algo.config, "compute_bc_loss", True, force_add=True)
+            OmegaConf.update(config.algo.config, "bc_loss_coef", bc_coef, force_add=True)
+            logger.info(f"PhysX BC loss ENABLED: coef={bc_coef}")
     elif _use_stub_env:
         from gear_sonic.envs.stub_env import StubEnv
         logger.info("Using StubEnv (no physics simulation)")
@@ -435,11 +502,15 @@ def main(config: OmegaConf):
         env.config["robot"]["algo_obs_dim_dict"]["critic_obs"] = env.env.observation_space[
             "critic"
         ].shape[-1]
-        if os.environ.get("SONIC_MUJOCO_ENV"):
-            # MuJoCo: no group obs (tokenizer is flat 1761D)
+        if os.environ.get("SONIC_MUJOCO_ENV") or os.environ.get("SONIC_PHYSX_ENV"):
+            # MuJoCo/PhysX: no group obs (tokenizer is flat 1761D)
             env.config["obs"]["obs_dims"]["tokenizer"] = 1761
             env.config["robot"]["algo_obs_dim_dict"]["tokenizer"] = 1761
             env.config["robot"]["actions_dim"] = 29
+            if os.environ.get("SONIC_PHYSX_ENV"):
+                # ref_action for BC loss: MSE(policy action_mean, reference qpos)
+                env.config["obs"]["obs_dims"]["ref_action"] = 29
+                env.config["robot"]["algo_obs_dim_dict"]["ref_action"] = 29
         else:
             example_obs = env.reset(flatten_dict_obs=False)
             for key in env.env.observation_space:
@@ -455,6 +526,60 @@ def main(config: OmegaConf):
                 env.config["robot"]["actions_dim"] = config.manager_env.config.meta_action_dim
             else:
                 env.config["robot"]["actions_dim"] = env.env.action_space.shape[-1]
+
+        # --- PhysX g1_recon coef override (general, independent of mode) ---
+        if os.environ.get("SONIC_PHYSX_G1_RECON_COEF"):
+            g1_recon_coef = float(os.environ["SONIC_PHYSX_G1_RECON_COEF"])
+            OmegaConf.update(config.algo.config, "actor.backbone.aux_loss_coef.g1_recon", g1_recon_coef, force_add=True)
+            logger.info(f"PhysX g1_recon_coef override: {g1_recon_coef}")
+
+        # --- PhysX encoder adaptation (Step 1): freeze decoder, max g1_recon ---
+        if os.environ.get("SONIC_PHYSX_ENC_ADAPT"):
+            OmegaConf.update(config.algo.config, "actor.backbone.aux_loss_coef.g1_recon", 1.0, force_add=True)
+            OmegaConf.update(config.algo.config, "ppo_loss_coef", 0, force_add=True)
+            policy_backbone_kwargs["freeze_decoders"] = True
+            logger.info("PhysX encoder adaptation ENABLED: g1_recon->1.0, ppo_loss_coef=0, freeze_decoders=True")
+
+        # --- PhysX BC-only (Step 2a): freeze encoder, decoder learns via BC loss ---
+        # Action noise must be tiny — large noise causes immediate termination even
+        # though action_mean matches reference qpos (BC loss ~0.005).
+        if os.environ.get("SONIC_PHYSX_BC_ONLY"):
+            OmegaConf.update(config.algo.config, "ppo_loss_coef", 0, force_add=True)
+            OmegaConf.update(config.algo.config, "init_noise_std", 0.01, force_add=True)
+            OmegaConf.update(config.algo.config, "deterministic_rollout", True, force_add=True)
+            policy_backbone_kwargs["freeze_encoders"] = True
+            logger.info("PhysX BC-only ENABLED: ppo=0, deterministic_rollout=True, init_noise_std=0.01, freeze_encoders=True")
+
+        # --- PhysX PPO noise control: lower init noise + freeze + clamp ---
+        # Without this, PPO learns to inflate action_std (entropy bonus) and
+        # per-step tracking reward degrades.
+        #
+        # Controlled by SONIC_PHYSX_NOISE_CTL=1 (default: on for non-BC_ONLY)
+        # Disable with SONIC_PHYSX_NOISE_CTL=0 to match pre-control code path.
+        #
+        # Env var tuning knobs (when enabled):
+        #   SONIC_PHYSX_NOISE_INIT     — init_noise_std (default 0.05)
+        #   SONIC_PHYSX_MAX_NOISE_STD  — clamp ceiling (default 0.10)
+        #   SONIC_PHYSX_ENTROPY_COEF   — override entropy_coef (default: unset)
+        _noise_ctl = os.environ.get("SONIC_PHYSX_NOISE_CTL", "1")
+        if (not os.environ.get("SONIC_PHYSX_BC_ONLY") and _noise_ctl == "1"):
+            noise_init = float(os.environ.get("SONIC_PHYSX_NOISE_INIT", "0.05"))
+            max_noise = float(os.environ.get("SONIC_PHYSX_MAX_NOISE_STD", "0.10"))
+            OmegaConf.update(config.algo.config, "init_noise_std", noise_init, force_add=True)
+            OmegaConf.update(config.algo.config, "freeze_noise_std", True, force_add=True)
+            OmegaConf.update(config.algo.config, "clamp_noise_std", True, force_add=True)
+            OmegaConf.update(config.algo.config, "max_noise_std", max_noise, force_add=True)
+            if os.environ.get("SONIC_PHYSX_ENTROPY_COEF"):
+                ent_coef = float(os.environ["SONIC_PHYSX_ENTROPY_COEF"])
+                OmegaConf.update(config.algo.config, "entropy_coef", ent_coef, force_add=True)
+                logger.info(f"PhysX entropy_coef override: {ent_coef}")
+            logger.info(f"PhysX PPO noise control: init_noise_std={noise_init}, "
+                        f"freeze_noise_std=True, clamp_noise_std=True, max_noise_std={max_noise}")
+
+        # --- PhysX freeze encoder (generic, e.g. to protect encoder during PPO) ---
+        if os.environ.get("SONIC_PHYSX_FREEZE_ENCODER"):
+            policy_backbone_kwargs["freeze_encoders"] = True
+            logger.info("PhysX freeze_encoders=True (generic)")
 
         policy = custom_instantiate(
             config.algo.config.actor,
@@ -497,6 +622,21 @@ def main(config: OmegaConf):
         raise ValueError("No longer supported")
 
     materialize_lazy_params(policy, env)
+
+    # PhysX BC checkpoint loading (env-var triggered)
+    # Load policy weights from a checkpoint saved by a previous BC/PPO run.
+    # Triggered by SONIC_PHYSX_BC_CHECKPOINT=/path/to/checkpoint.pt
+    _bc_ckpt = os.environ.get("SONIC_PHYSX_BC_CHECKPOINT", "")
+    if _bc_ckpt:
+        import torch as _torch
+        _sd = _torch.load(_bc_ckpt, map_location=device, weights_only=False)
+        _policy_sd = _sd.get("policy", _sd)
+        missing, unexpected = policy.load_state_dict(_policy_sd, strict=False)
+        logger.info(f"PhysX BC checkpoint loaded from {_bc_ckpt}: missing={len(missing)}, unexpected={len(unexpected)}")
+        if missing:
+            logger.info(f"  Missing keys: {missing[:5]}...")
+        if unexpected:
+            logger.info(f"  Unexpected keys: {unexpected[:5]}...")
 
     if config.algo.config.get("pretrained_model", None) is not None:
         pretrained_cfg = config.algo.config.pretrained_model
@@ -608,6 +748,23 @@ def main(config: OmegaConf):
         accelerator=accelerator,
         _resolve=False,
     )
+
+    # PhysX BC-only: reset action noise AFTER checkpoint load (which restores 0.38)
+    if os.environ.get("SONIC_PHYSX_BC_ONLY"):
+        unwrapped = accelerator.unwrap_model(trainer.model)
+        actor = unwrapped.policy
+        if hasattr(actor, "log_std"):
+            with torch.no_grad():
+                actor.log_std.data = torch.log(0.01 * torch.ones_like(actor.log_std))
+                actor.log_std.requires_grad = False
+            logger.info("PhysX BC-only: log_std reset to log(0.01) (after checkpoint load)")
+        elif hasattr(actor, "std"):
+            with torch.no_grad():
+                actor.std.data.fill_(0.01)
+                actor.std.requires_grad = False
+            logger.info("PhysX BC-only: std reset to 0.01 (after checkpoint load)")
+        else:
+            logger.warning("PhysX BC-only: no std/log_std on actor — noise NOT reset")
 
     # Training loop
     trainer.train()

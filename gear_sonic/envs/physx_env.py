@@ -55,11 +55,17 @@ class PhysXEnv:
     """Single PhysX G1 environment — SONIC-compatible obs/reward/termination."""
 
     def __init__(self, px, model_xml, pkl_dir, config=None,
-                 native_dt=0.002, decimation=10, pos_iters=8, vel_iters=1):
+                 native_dt=0.002, decimation=10, pos_iters=8, vel_iters=1,
+                 static_pose=False, root_z_offset=0.0, standing_prob=0.0,
+                 drive_type="ACCELERATION"):
         self.px = px
+        self._static_pose = static_pose
+        self._root_z_offset = root_z_offset
+        self._standing_prob = standing_prob  # per-episode prob (0=never, 1=always)
 
         # ── PhysX scene + articulation ──
-        self.art = load_g1(px, model_xml, pos_iters=pos_iters, vel_iters=vel_iters)
+        self.art = load_g1(px, model_xml, pos_iters=pos_iters, vel_iters=vel_iters,
+                             drive_type=drive_type)
         self.scene = px.create_scene(gravity=np.array([0,0,-9.81], dtype=np.float32))
         mat = self.scene.create_material(0.6, 0.5, 0.0)
         self.scene.add_ground_plane(mat, np.array([0,0,1], dtype=np.float32))
@@ -100,7 +106,12 @@ class PhysXEnv:
         self.ep = 0
         self.max_ep = getattr(config, "max_episode_length", 500) if config else 500
         self.ignore_terminations = getattr(config, "ignore_terminations", False) if config else False
+        self.skip_termination = getattr(config, "skip_termination", False) if config else False
         self.alive_bonus = getattr(config, "alive_bonus", 0.0) if config else 0.0
+        self.ori_thresh = getattr(config, "ori_thresh", 0.2) if config else 0.2
+        self.ank_pos_thresh = getattr(config, "ank_pos_thresh", 0.2) if config else 0.2
+        self.ank_h_mult = getattr(config, "ank_h_mult", 1.0) if config else 1.0
+        self.action_trust = getattr(config, "action_trust", 1.0) if config else 1.0
 
         # ── Motions ──
         self.motions = self._load_motions(pkl_dir)
@@ -147,11 +158,17 @@ class PhysXEnv:
         self._ref_root_trans = m["root_trans_offset"].astype(np.float64)
         self._ref_fps = m.get("fps", 30.0)
         self._ref_dt = 1.0 / self._ref_fps
-        max_time = (n - self.max_ep - 1) * self._ref_dt
-        self._ref_time = np.random.uniform(0, max(0.001, max_time))
+        if self._static_pose:
+            if self._root_z_offset != 0.0:
+                self._ref_root_trans[:, 2] += self._root_z_offset
+            self._ref_time = 0.0
+        else:
+            max_time = (n - self.max_ep - 1) * self._ref_dt
+            self._ref_time = np.random.uniform(0, max(0.001, max_time))
 
     def _advance_motion_time(self):
-        self._ref_time += self.ctrl_dt
+        if not self._static_pose:
+            self._ref_time += self.ctrl_dt
 
     def _future_dof(self, n=NUM_FUTURE, dt_ref=FUTURE_DT_REF):
         dof = self._ref_dof; fps = self._ref_fps; end = len(dof)
@@ -262,7 +279,8 @@ class PhysXEnv:
     def _obs(self):
         return {"actor_obs": self._compute_actor_obs(),
                 "critic_obs": self._compute_critic_obs(),
-                "tokenizer": self._build_tokenizer()}
+                "tokenizer": self._build_tokenizer(),
+                "ref_action": (self.get_current_ref_qpos() - self.jm) / self.jh}
 
     def _compute_actor_obs(self):
         root_quat = self.art.get_root_world_pose()[1]
@@ -372,7 +390,7 @@ class PhysXEnv:
         r9 = -0.1 * self._undesired_contact()
         r10 = -0.005 * self._anti_shake()
         r11 = 2.0 * self._vr_local_error()
-        r12 = -2.5e-9 * self._feet_acc()
+        r12 = -2.5e-6 * self._feet_acc()
         r13 = self.alive_bonus
 
         return float(r1+r2+r3+r4+r5+r6+r7+r8+r9+r10+r11+r12+r13)
@@ -433,17 +451,23 @@ class PhysXEnv:
     # robot body positions via Python FK from actual joint angles.
     # ═══════════════════════════════════════════════════════════════════
     def _check_termination(self):
+        if self.skip_termination:
+            return False, False
+
         ref_root_pos = self._ref_root_pos(); ref_root_quat = self._ref_root_quat()
         root_pos, root_quat = self.art.get_root_world_pose()
         ref_h = ref_root_pos[2]; root_h = root_pos[2]
         term = False; h_thresh = 0.75 if ref_h < 0.5 else 0.15
+        term_reason = ""
 
-        _ORI_THRESH = 0.35  # relaxed from Isaac 0.2 (PhysX α=0.006 vs Isaac 0.002)
-        _ANK_POS_THRESH = 0.35
-        _ANK_H_MULT = 1.5
+        dh = abs(ref_h - root_h)
+        if dh > h_thresh:
+            term = True; term_reason = f"height({dh:.3f}>{h_thresh:.3f})"
 
-        if abs(ref_h - root_h) > h_thresh: term = True
-        if quat_error_magnitude(ref_root_quat, root_quat)**2 > _ORI_THRESH: term = True
+        ori_err = quat_error_magnitude(ref_root_quat, root_quat)**2
+        if ori_err > self.ori_thresh:
+            term = True
+            term_reason += f" ori({ori_err:.3f}>{self.ori_thresh:.3f})"
 
         # Compute robot body positions via Python FK for consistent reference comparison
         actual_qpos = self.art.get_joint_positions()
@@ -455,17 +479,26 @@ class PhysXEnv:
                      "left_wrist_yaw_link", "right_wrist_yaw_link"):
             idx = list(BODY_NAMES).index(name)
             err = abs(ref_body_pos[idx, 2] - actual_body_pos[idx][2])
-            if err > h_thresh * _ANK_H_MULT:
-                term = True; break
+            h_limit = h_thresh * self.ank_h_mult
+            if err > h_limit:
+                term = True
+                term_reason += f" {name}_h({err:.3f}>{h_limit:.3f})"
+                break
 
         for name in ("left_ankle_roll_link", "right_ankle_roll_link"):
             idx = list(BODY_NAMES).index(name)
             ref_aligned = ref_body_pos[idx] - ref_root_pos + root_pos
             err = np.linalg.norm(ref_aligned - actual_body_pos[idx])
-            if err > _ANK_POS_THRESH:
-                term = True; break
+            if err > self.ank_pos_thresh:
+                term = True
+                term_reason += f" {name}_pos({err:.3f}>{self.ank_pos_thresh:.3f})"
+                break
 
-        trunc = int(self._ref_time * self._ref_fps) >= len(self._ref_dof) - 1
+        if term and self.ep == 0:
+            pass  # Debug print removed — use action_trust to bootstrap
+
+        trunc = (int(self._ref_time * self._ref_fps) >= len(self._ref_dof) - 1
+                 or self.ep >= self.max_ep)
         return term, trunc
 
     # ═══════════════════════════════════════════════════════════════════
@@ -476,6 +509,8 @@ class PhysXEnv:
         return self._ref_dof[idx].astype(np.float32)
 
     def reset(self):
+        if self._standing_prob > 0:
+            self._static_pose = np.random.random() < self._standing_prob
         self._sample_motion()
         idx = int(self._ref_time * self._ref_fps)
         ref_q0 = self._ref_dof[idx]
@@ -485,6 +520,8 @@ class PhysXEnv:
                       self._ref_root_rot[idx][1], self._ref_root_rot[idx][2]], dtype=np.float32))
         self.art.set_joint_positions(ref_q0.astype(np.float32))
         self.art.set_joint_velocities(np.zeros(self.nu, dtype=np.float32))
+        self.art.set_root_world_velocity(np.zeros(3, dtype=np.float32),
+                                          np.zeros(3, dtype=np.float32))
         # Reset drive targets to match initial pose — otherwise stale targets
         # from the previous episode cause extreme torque transients.
         self.art.set_joint_drive_targets(ref_q0.astype(np.float32))
@@ -505,6 +542,17 @@ class PhysXEnv:
     def step(self, action):
         if action.ndim == 2: action = action[0]
         action = np.clip(action, -1, 1).astype(np.float64)
+
+        # Blend model action with ref_action: action_trust=0 means pure ref_action
+        # NaN guard: 0.0 * NaN = NaN in IEEE 754 — model NaNs would leak
+        # through PD targets → physics → observations → all envs.
+        if self.action_trust < 1.0:
+            ref_action = (self.get_current_ref_qpos() - self.jm) / self.jh
+            if not np.isfinite(action).all():
+                action = ref_action.copy()
+            else:
+                action = self.action_trust * action + (1.0 - self.action_trust) * ref_action
+
         self._ah[:-1] = self._ah[1:]; self._ah[-1] = action
         self._pd_control(action); self._physics_step()
         self._advance_motion_time()
