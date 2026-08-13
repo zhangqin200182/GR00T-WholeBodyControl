@@ -219,3 +219,9 @@ models/
 # Downloaded from HuggingFace (hf download)
 sample_data/
 sonic_release/
+
+# Local checkpoint backups and render artifacts (large binaries, not for git)
+checkpoints_backup/
+standing_*.mp4
+standing_*.npz
+standing_*.png
