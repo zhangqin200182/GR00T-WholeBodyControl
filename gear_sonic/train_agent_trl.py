@@ -372,6 +372,11 @@ def main(config: OmegaConf):
     if os.environ.get("SONIC_MUJOCO_ENV"):
         from gear_sonic.envs.mujoco_env_manager import MuJoCoEnvManager
         logger.info("Using MuJoCoEnvManager (CPU physics)")
+        # MuJoCo-specific exploration/noise adaptation (previously leaked into
+        # the global ppo_im_phc.yaml / sonic_release.yaml defaults).
+        OmegaConf.update(config.algo.config, "init_noise_std", 0.15, force_add=True)
+        OmegaConf.update(config.algo.config, "std_clamp_min", 0.05, force_add=True)
+        OmegaConf.update(config.algo.config, "std_clamp_max", 1.0, force_add=True)
         # DDP: each rank gets num_envs / world_size envs
         local_envs = config.num_envs // accelerator.num_processes
         env = MuJoCoEnvManager(
@@ -652,6 +657,14 @@ def main(config: OmegaConf):
             logger.info(f"  Missing keys: {missing[:5]}...")
         if unexpected:
             logger.info(f"  Unexpected keys: {unexpected[:5]}...")
+        # Fail-fast: our checkpoints are same-architecture, so a healthy load
+        # has zero missing/unexpected keys.  A silent partial load is exactly
+        # the failure mode that caused the step-1-death bug.
+        if missing or unexpected:
+            raise RuntimeError(
+                f"PhysX BC checkpoint load mismatch: missing={len(missing)}, "
+                f"unexpected={len(unexpected)}. Checkpoint: {_bc_ckpt}"
+            )
 
     if config.algo.config.get("pretrained_model", None) is not None:
         pretrained_cfg = config.algo.config.pretrained_model
@@ -672,67 +685,10 @@ def main(config: OmegaConf):
             if unexpected:
                 logger.info(f"Pretrained loading '{module_name}': unexpected keys: {unexpected}")
 
-    # ── v14: g1_dyn decoder re-initialization ──────────────────────
-    # Re-initialize the last N Linear layers of the g1_dyn decoder so it
-    # re-learns foot placement dynamics under MuJoCo physics instead of
-    # relying on the Isaac Sim (PhysX) prior that produces unstable contact.
-    # Controlled by: algo.config.g1_dyn_reinit (bool)
-    #                algo.config.g1_dyn_reinit_layers (int, 2 or 3)
-    if config.algo.config.get("g1_dyn_reinit", False):
-        n_layers = config.algo.config.get("g1_dyn_reinit_layers", 3)
-        g1_dyn_module = policy.actor_module.decoders["g1_dyn"].module
-        # Map n_layers → nn.Sequential indices:
-        #   n=2 → [10, 12]       (last 2 Linear: 512→512, 512→action)
-        #   n=3 → [8, 10, 12]    (last 3 Linear: 1024→512, 512→512, 512→action)
-        linear_indices = [12 - 2 * i for i in range(n_layers)]
-        for idx in linear_indices:
-            layer = g1_dyn_module[idx]
-            if isinstance(layer, torch.nn.Linear):
-                torch.nn.init.xavier_uniform_(layer.weight)
-                torch.nn.init.zeros_(layer.bias)
-                logger.info(
-                    f"[v14] Re-initialized g1_dyn decoder layer[{idx}]: "
-                    f"Linear({layer.in_features}→{layer.out_features})"
-                )
-        logger.info(
-            f"[v14] g1_dyn decoder re-initialization complete. "
-            f"Layers re-initialized: {linear_indices}"
-        )
-
-    # ── v14b: Freeze backbone to isolate g1_dyn ─────────────────────
-    # v14 showed that re-initializing g1_dyn's last 3 layers produced
-    # a PPO loss spike (110K) whose gradients propagated through the
-    # shared token → encoder → quantizer path and corrupted the motion
-    # representation (g1_recon: 0.008 → 0.544).
-    #
-    # v14b freezes all shared modules (encoders, quantizer, g1_kin)
-    # so g1_dyn can re-learn MuJoCo foot dynamics without destabilizing
-    # the pretrained motion understanding.  Only g1_dyn + critic train.
-    if config.algo.config.get("g1_dyn_freeze_backbone", False):
-        frozen_modules = []
-
-        # Freeze all encoders (g1, teleop, smpl)
-        for enc_name, encoder in policy.actor_module.encoders.items():
-            for param in encoder.parameters():
-                param.requires_grad = False
-            frozen_modules.append(f"encoder.{enc_name}")
-
-        # Freeze quantizer (FSQ)
-        if (hasattr(policy.actor_module, 'quantizer')
-                and policy.actor_module.quantizer is not None):
-            for param in policy.actor_module.quantizer.parameters():
-                param.requires_grad = False
-            frozen_modules.append("quantizer")
-
-        # Freeze g1_kin decoder (keep g1_dyn trainable)
-        for dec_name, decoder in policy.actor_module.decoders.items():
-            if dec_name != "g1_dyn":
-                for param in decoder.parameters():
-                    param.requires_grad = False
-                frozen_modules.append(f"decoder.{dec_name}")
-
-        logger.info(f"[v14b] Frozen backbone modules: {frozen_modules}")
-        logger.info(f"[v14b] Trainable: decoder.g1_dyn + critic")
+    # ── v14/v14b experimental blocks REMOVED (08-14) ─────────────────
+    # g1_dyn_reinit (hardcoded layer indices) and g1_dyn_freeze_backbone
+    # were v14/v14b experiments; both routes were terminated (see
+    # v14-postmortem-v14b-design).  Removed per pipeline audit.
 
     accelerator.wait_for_everyone()
 

@@ -78,8 +78,8 @@ algo:
     empty_cache_every_n_ppo_epoch: -1
     num_steps_per_env: 24
     use_clampped_std: true
-    std_clamp_min: 0.05
-    std_clamp_max: 1.0
+    std_clamp_min: 0.001
+    std_clamp_max: 0.5
     max_grad_norm: 0.1
     actor:
       backbone:

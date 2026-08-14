@@ -922,7 +922,14 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
             for i in range(self.num_steps_per_env):  # noqa: B007
                 # Compute the actions and values
                 # TODO: 1: unsqueeze to [B, 1, ...]  # noqa: TD002, TD003
-                policy_state_dict = self.policy_step(policy_model, obs_dict, cur_dones=dones)
+                # cur_dones=None: build the episode attention mask from
+                # storage dones (=_orig_done, true terminations).  Under
+                # ignore_terminations the env's masked dones are always
+                # False, so passing them hides episode boundaries from the
+                # transformer (cross-episode obs history pollutes rollout
+                # actions).  GAE already uses _orig_done; this aligns the
+                # rollout mask with it.
+                policy_state_dict = self.policy_step(policy_model, obs_dict, cur_dones=None)
 
                 # Append states to storage
                 for key, value in obs_dict.items():

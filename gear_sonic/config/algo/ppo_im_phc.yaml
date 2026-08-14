@@ -34,7 +34,7 @@ algo:
     eval_frequency: 500
     load_optimizer: True
 
-    init_noise_std: 0.15
+    init_noise_std: 0.05
 
     num_learning_iterations: 100000
     init_at_random_ep_len: True
