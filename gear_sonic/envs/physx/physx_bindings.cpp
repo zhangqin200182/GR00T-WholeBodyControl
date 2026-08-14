@@ -28,6 +28,9 @@ namespace py = pybind11;
 using namespace physx;
 
 struct Articulation;
+// Opt-in contact capture (PHYSX_CONTACT_DEBUG=1).  When off, the callback is
+// a no-op and no contact points are stored — training runs leak-free.
+static bool g_contact_debug = getenv("PHYSX_CONTACT_DEBUG") != nullptr;
 
 // ═══════════════════════════════════════════════════════════════════════
 struct MinimalErrorCallback : PxErrorCallback {
@@ -53,7 +56,9 @@ static PxFilterFlags filter_shader(
         t1 == PxFilterObjectType::eARTICULATION)
         return PxFilterFlag::eKILL;
     pf = PxPairFlag::eCONTACT_DEFAULT | PxPairFlag::eNOTIFY_TOUCH_FOUND
-       | PxPairFlag::eNOTIFY_TOUCH_LOST | PxPairFlag::eNOTIFY_CONTACT_POINTS;
+       | PxPairFlag::eNOTIFY_TOUCH_LOST;
+    if (g_contact_debug)
+        pf |= PxPairFlag::eNOTIFY_CONTACT_POINTS;
     return PxFilterFlag::eDEFAULT;
 }
 
@@ -105,6 +110,7 @@ struct DebugCallback : PxSimulationEventCallback {
     void onTrigger(PxTriggerPair*, PxU32) override {}
     void onAdvance(const PxRigidBody* const*, const PxTransform*, const PxU32) override {}
     void onContact(const PxContactPairHeader &h, const PxContactPair *pairs, PxU32 n) override {
+        if(!g_contact_debug) return;
         auto *a0 = static_cast<PxRigidActor*>(h.actors[0]);
         auto *a1 = static_cast<PxRigidActor*>(h.actors[1]);
         for(PxU32 i=0;i<n;i++){
