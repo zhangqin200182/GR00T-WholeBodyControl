@@ -20,6 +20,7 @@
 #include <foundation/PxFoundation.h>
 #include <algorithm>
 #include <map>
+#include <mutex>
 #include <vector>
 #include <string>
 
@@ -41,8 +42,18 @@ static PxFilterFlags filter_shader(
     PxFilterObjectAttributes a0, PxFilterData d0,
     PxFilterObjectAttributes a1, PxFilterData d1,
     PxPairFlags &pf, const void *cb, PxU32 cbs) {
-    (void)a0;(void)d0;(void)a1;(void)d1;(void)cb;(void)cbs;
-    pf = PxPairFlag::eCONTACT_DEFAULT | PxPairFlag::eNOTIFY_TOUCH_FOUND | PxPairFlag::eNOTIFY_TOUCH_LOST;
+    (void)d0;(void)d1;(void)cb;(void)cbs;
+    // Kill articulation-articulation pairs (self-collision): with corrected
+    // link frames the per-link fallback capsules overlap at the joints, and
+    // self-collision would explode the solver.  Only robot-vs-ground matters
+    // for this task.  (The permissive shader was fine while the broken frames
+    // kept the shapes far apart.)
+    auto t0 = PxGetFilterObjectType(a0), t1 = PxGetFilterObjectType(a1);
+    if (t0 == PxFilterObjectType::eARTICULATION &&
+        t1 == PxFilterObjectType::eARTICULATION)
+        return PxFilterFlag::eKILL;
+    pf = PxPairFlag::eCONTACT_DEFAULT | PxPairFlag::eNOTIFY_TOUCH_FOUND
+       | PxPairFlag::eNOTIFY_TOUCH_LOST | PxPairFlag::eNOTIFY_CONTACT_POINTS;
     return PxFilterFlag::eDEFAULT;
 }
 
@@ -75,6 +86,42 @@ static PxTransform np_to_xf(const py::array_t<float> &p,const py::array_t<float>
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+// Debug contact capture — records contact points with actor pointers so
+// Python can identify WHICH links/shapes are touching (foot-contact audit).
+// ═══════════════════════════════════════════════════════════════════════
+struct DebugContact {
+    PxVec3 pa, pb;        // world positions of the two actors
+    const void *actA, *actB;
+    float sep;            // contact point separation
+};
+static std::vector<DebugContact> g_debug_contacts;
+static std::mutex g_debug_mutex;  // std::mutex: PxMutex needs the foundation, which isn't up yet at static-init
+
+struct DebugCallback : PxSimulationEventCallback {
+    void onConstraintBreak(PxConstraintInfo*, PxU32) override {}
+    void onWake(PxActor**, PxU32) override {}
+    void onSleep(PxActor**, PxU32) override {}
+    void onTrigger(PxTriggerPair*, PxU32) override {}
+    void onAdvance(const PxRigidBody* const*, const PxTransform*, const PxU32) override {}
+    void onContact(const PxContactPairHeader &h, const PxContactPair *pairs, PxU32 n) override {
+        auto *a0 = static_cast<PxRigidActor*>(h.actors[0]);
+        auto *a1 = static_cast<PxRigidActor*>(h.actors[1]);
+        for(PxU32 i=0;i<n;i++){
+            PxContactPairPoint pts[8];
+            PxU32 m = pairs[i].extractContacts(pts, 8);
+            for(PxU32 j=0;j<m;j++){
+                g_debug_mutex.lock();
+                g_debug_contacts.push_back({a0->getGlobalPose().p,
+                                            a1->getGlobalPose().p,
+                                            h.actors[0], h.actors[1], pts[j].separation});
+                g_debug_mutex.unlock();
+            }
+        }
+    }
+};
+static DebugCallback g_debug_cb;
+
 // Scene
 // ═══════════════════════════════════════════════════════════════════════
 struct Scene {
@@ -96,9 +143,19 @@ struct Scene {
     }
     void add_ground_plane(int midx, py::array_t<float> normal);
     void add_articulation(Articulation *art);
-    // TODO(T3): scene.get_contacts() — needed for _undesired_contact reward term.
-    // Requires simulation event callback or PxScene::getContactData iterating
-    // over articulation link pairs. Filter shader already sets eNOTIFY_TOUCH_FOUND.
+
+    py::list get_contacts() {
+        py::list out;
+        g_debug_mutex.lock();
+        for(auto &c : g_debug_contacts)
+            out.append(py::make_tuple(c.pa.x, c.pa.y, c.pa.z, c.pb.x, c.pb.y, c.pb.z,
+                                      (py::ssize_t)c.actA, (py::ssize_t)c.actB, c.sep));
+        g_debug_mutex.unlock();
+        return out;
+    }
+    void clear_contacts() {
+        g_debug_mutex.lock(); g_debug_contacts.clear(); g_debug_mutex.unlock();
+    }
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -132,7 +189,8 @@ struct Articulation {
                   py::array_t<float> joint_lower, py::array_t<float> joint_upper,
                   py::array_t<float> joint_friction,
                   int pos_iters, int vel_iters,
-                  const std::string& drive_type_str);
+                  const std::string& drive_type_str,
+                  bool local_poses);
 
     // State
     py::array_t<float> get_joint_positions();
@@ -141,6 +199,7 @@ struct Articulation {
     std::pair<py::array_t<float>,py::array_t<float>> get_root_world_velocity();
     std::pair<py::array_t<float>,py::array_t<float>> get_link_world_pose(int idx);
     int  get_link_index(const std::string &name) { return name_to_idx.at(name); }
+    py::ssize_t get_link_actor_ptr(int lidx) { return (py::ssize_t)links[lidx]; }
     int  num_joints() const { return (int)joints.size(); }
     int  num_links()  const { return (int)links.size(); }
 
@@ -254,7 +313,8 @@ void Articulation::finalize(
     py::array_t<float> lower_arr, py::array_t<float> upper_arr,
     py::array_t<float> fric_arr,
     int pos_iters, int vel_iters,
-    const std::string& drive_type_str)
+    const std::string& drive_type_str,
+    bool local_poses)
 {
     if(ptr) throw std::runtime_error("already finalized");
     if(!g_physics) throw std::runtime_error("call init_foundation() first");
@@ -282,12 +342,11 @@ void Articulation::finalize(
     ptr = g_physics->createArticulationReducedCoordinate();
     if(!ptr) throw std::runtime_error("createArticulationReducedCoordinate failed");
 
-    // Accumulate world-space poses from parent-local MJCF body positions.
-    // createLink(parent, world_pose) sets parentPose = parent_CoM⁻¹ * world_pose
-    // which differs from the correct MJCF local, but the articulated chain's
-    // positions are still correct.  Python-side FK (physx_fk.py) supplies all
-    // body-tracking positions; getGlobalPose is not used for observations or
-    // rewards.  The world-space path keeps the solver stable.
+    // link pose passed to createLink(parent, pose): PhysX interprets `pose` as
+    // PARENT-RELATIVE and propagates it parent→child.  Passing world-accumulated
+    // poses double-applies the parent transforms at every level below the root,
+    // displacing deep links (ankle at ~2-3 m) and their collision shapes.
+    // local_poses=true passes the raw MJCF body poses (already parent-local).
     std::vector<PxTransform> world_poses(n_links);
     for(int i=0;i<n_links;i++) {
         PxTransform body(PxVec3(pb(i*3),pb(i*3+1),pb(i*3+2)),
@@ -299,7 +358,9 @@ void Articulation::finalize(
     for(int i=0;i<n_links;i++) {
         int p=parb(i);
         PxArticulationLink *parent = (p>=0) ? links[p] : nullptr;
-        links[i] = ptr->createLink(parent, world_poses[i]);
+        PxTransform body(PxVec3(pb(i*3),pb(i*3+1),pb(i*3+2)),
+                         PxQuat(qb(i*4+1),qb(i*4+2),qb(i*4+3),qb(i*4+0)));
+        links[i] = ptr->createLink(parent, local_poses ? body : world_poses[i]);
         if(!links[i]) throw std::runtime_error("createLink failed: "+link_names[i]);
 
         links[i]->setMass(mb(i));
@@ -444,7 +505,11 @@ void Articulation::attach_sphere(int lidx, float r, py::array_t<float> p, py::ar
 void Articulation::attach_box(int lidx, float hx,float hy,float hz, py::array_t<float> p, py::array_t<float> q){
     PxBoxGeometry g(hx,hy,hz); auto *m=get_mat();
     PxShape *s=g_physics->createShape(g,*m,true);
-    s->setLocalPose(np_to_xf(p,q)); s->setContactOffset(0.02f);
+    s->setLocalPose(np_to_xf(p,q));
+    // contactOffset must be < the smallest half-extent (foot box hz=0.015).
+    // 0.02 > 0.015 inflates the PCM manifold past the thin dimension and the
+    // positional correction ejects the robot at ~10 m/s on first contact.
+    s->setContactOffset(hz<0.02f ? 0.005f : 0.02f);
     links[lidx]->attachShape(*s);
 }
 void Articulation::attach_capsule(int lidx, float r, float hh, py::array_t<float> p, py::array_t<float> q){
@@ -467,7 +532,9 @@ PYBIND11_MODULE(physx_core, m) {
              py::arg("static_friction"),py::arg("dynamic_friction"),py::arg("restitution"))
         .def("add_articulation",&Scene::add_articulation,py::arg("art"))
         .def("add_ground_plane",&Scene::add_ground_plane,
-             py::arg("material_idx"),py::arg("normal"));
+             py::arg("material_idx"),py::arg("normal"))
+        .def("get_contacts",&Scene::get_contacts)
+        .def("clear_contacts",&Scene::clear_contacts);
 
     py::class_<Articulation>(m,"Articulation")
         .def(py::init<>())
@@ -485,13 +552,15 @@ PYBIND11_MODULE(physx_core, m) {
              py::arg("joint_lower"),py::arg("joint_upper"),
              py::arg("joint_friction"),
              py::arg("position_iters")=8,py::arg("velocity_iters")=1,
-             py::arg("drive_type")="ACCELERATION")
+             py::arg("drive_type")="ACCELERATION",
+             py::arg("local_poses")=false)
         .def("get_joint_positions",&Articulation::get_joint_positions)
         .def("get_joint_velocities",&Articulation::get_joint_velocities)
         .def("get_root_world_pose",&Articulation::get_root_world_pose)
         .def("get_root_world_velocity",&Articulation::get_root_world_velocity)
         .def("get_link_world_pose",&Articulation::get_link_world_pose,py::arg("idx"))
         .def("get_link_index",&Articulation::get_link_index,py::arg("name"))
+        .def("get_link_actor_ptr",&Articulation::get_link_actor_ptr,py::arg("idx"))
         .def_property_readonly("num_joints",&Articulation::num_joints)
         .def_property_readonly("num_links",&Articulation::num_links)
         .def("set_root_world_pose",&Articulation::set_root_world_pose,
@@ -539,6 +608,7 @@ PYBIND11_MODULE(physx_core, m) {
         if(!g_physics) throw std::runtime_error("call init_foundation() first");
         PxSceneDesc sd(g_physics->getTolerancesScale()); sd.gravity=np_to_v3(g);
         sd.cpuDispatcher=PxDefaultCpuDispatcherCreate(1); sd.filterShader=filter_shader;
+        sd.simulationEventCallback=&g_debug_cb;
         sd.bounceThresholdVelocity=2.0f; sd.frictionType=PxFrictionType::ePATCH;
         sd.solverType=(st=="TGS")?PxSolverType::eTGS:PxSolverType::ePGS;
         PxScene *pxs=g_physics->createScene(sd);

@@ -184,6 +184,7 @@ def load_g1(px, xml_path, pos_iters=8, vel_iters=1, drive_type="ACCELERATION"):
         position_iters=pos_iters,
         velocity_iters=vel_iters,
         drive_type=drive_type,
+        local_poses=True,
     )
 
     # setParentPose fix DISABLED: it improves PhysX FK (getGlobalPose) from
@@ -416,7 +417,11 @@ class _MJCFParser:
         elif "hip_pitch" in name or "hip_roll" in name or "hip_yaw" in name:
             self.shapes.append({"method": "attach_capsule", "args": [link_idx, 0.06, 0.10, pos, quat]})
         elif "ankle_pitch" in name:
-            self.shapes.append({"method": "attach_capsule", "args": [link_idx, 0.04, 0.06, pos, quat]})
+            # Skip: the ankle capsule (r=0.04, hh=0.06) extends 10cm below the
+            # ankle joint and penetrates the ground ~5cm at the mocap reset
+            # height, launching the robot.  The ankle_roll foot box is the
+            # actual sole contact surface.
+            pass
         elif "torso" in name:
             self.shapes.append({"method": "attach_box", "args": [link_idx, 0.12, 0.15, 0.20, pos, quat]})
         elif "shoulder_yaw" in name:

@@ -1075,3 +1075,20 @@ resume 训练正常运行 50 iter 后在 iter 150 保存时崩溃 — 但失败�
 **踝振荡（Phase C 回退检查）**: 1300 前 25 步踝 pp 125/203/131/167 mrad (Lp/Lr/Rp/Rr)，高于 500-iter (116/177/69/73) 但**低于 ref PD 基线 (292-403 mrad)** — 无振荡回退 ✅。
 
 **结论**: 定量指标全部通过（域内步态健康、出域高度调节泛化、无振荡回退）。视频待肉眼确认，产物在本地 job tmp (ppo1300_full.mp4 全程 / ppo1300_gait.mp4 前 150 步 / ppo1300_f*_view.png)。
+
+### P0 物理层修复：脚部接触缺失根因与修复 (08-14)
+
+渲染验证发现足部穿透 59cm → 诊断发现 **PhysX 脚部碰撞 box 从未接触地面**（腿链帧错位，脚 box 悬在 2-3m 高空），行走支撑来自骨盆 box + 帧错位下 RC articulation 的非物理行为。
+
+**根因**: `createLink(parent, pose)` 的 pose 是父系相对位姿，旧代码传世界累积位姿 → 父变换每层重复应用 → 深链 link（踝）偏移 2-3m。
+
+**五项修复**:
+1. `finalize(local_poses=True)` — 传 MJCF 父系局部位姿
+2. filter shader 杀掉 articulation 自碰撞（帧修正后 fallback 胶囊重叠爆炸）
+3. 薄 box contactOffset 0.02→0.005（PCM 膨胀几何 10m/s 弹射）
+4. 移除 ankle_pitch fallback 胶囊（插地 5cm 弹射源）
+5. 训练配置 root_z_offset=+0.03（补偿动捕悬空，box 贴地起步）
+
+**修复后**: 踝 FK 0.052m ✅；脚 box 接触地面 ✅；静态站立 60+ 步 ✅；**ref PD 基线 9.2→80.3 步**（含 145/485 步完整动捕集）。旧 hinge 策略对新物理无效（塌缩），全部训练需重新标定。
+
+**SDK**: 原版 PhysX 5.6.1（ovphysx-0.5.9 tag，本地 /Users/kevin/code/PhysX）已恢复并重建；5.6.1 与旧 .so 物理逐位一致（指纹验证通过）。构建配方见 memory physx-foot-contact-p0-bug。
