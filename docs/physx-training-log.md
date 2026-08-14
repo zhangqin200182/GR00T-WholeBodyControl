@@ -1114,3 +1114,11 @@ resume 训练正常运行 50 iter 后在 iter 150 保存时崩溃 — 但失败�
 - **Phase 4**: 4096 production + 0.35/0.30/0.20 评测矩阵重建 + 渲染验证
 
 旧训练结论（v6 配方数值、hinge w=2.0、37.92 等）全部基于坏物理，仅作参考，需重新验证。
+
+### Phase 2 启动: 修复物理 BC warmup (08-14 05:27 UTC)
+
+**Smoke 验证通过** (32 envs × 2 DDP × 100 iter, BC_ONLY + trust=0): mean length **55.4**（旧物理 ~9.2，6×）、rewards +338、0 NaN、BC loss 正常下降。iter 100 的 checkpoint 保存短写失败（容器 6.2G < 7G 阈值，已知 sda2 问题）。
+
+**完整 BC warmup 已启动**: 4096 envs × 16 DDP × 300 iter，全新从 SONIC release 起步，trust=0 纯 ref rollout，ori/ank=0.35 + IGNORE_TERM=1 + ROOT_Z_OFFSET=0.04，checkpoint 写 /dev/shm/physx_runs/bc_walking_fixed（避开 overlay 压力）。log: /tmp/physx_bc_full_20260814_052709.log，PID 165024，ETA ~70min。
+
+旧物理 run 目录（logs_rl 14G）暂保留未删（备份未全部确认），不阻塞新训练。
