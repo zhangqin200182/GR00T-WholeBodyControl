@@ -1132,3 +1132,14 @@ resume 训练正常运行 50 iter 后在 iter 150 保存时崩溃 — 但失败�
 **修复**: 依次尝试 `actor_model_state_dict` / `policy_state_dict` / `policy`。加载后 missing=0。BC@trust=0.5 阶梯 length 2.05 → **14.4 @ iter 1**。
 
 **教训**: checkpoint 加载必须打印 missing/unexpected 并核对——55 missing 从一开始就在日志里，但旧物理对近零动作有容忍度，掩盖了问题。
+
+### 管线对比审计 + 修复 (08-14)
+
+对比我们 fork 的管线与上游原生 SONIC（排除 env 层），8 文件有改动，修复 4 项：
+
+1. **rollout 掩码**（ppo_trainer.py）：cur_dones=None → 从 storage 的 _orig_done 构建 episode 注意力掩码。ignore_terminations 下 env 的 masked dones 恒 False，原先会向 transformer 隐藏 episode 边界（跨集 obs 历史污染 rollout 动作）——与 BC checkpoint bug 正交的独立缺陷
+2. **BC checkpoint fail-fast**：missing/unexpected 非零即报错（step-1 死亡的静默部分加载模式从此不可能再发生）
+3. **配置泄漏收敛**：init_noise_std 0.15 / std_clamp 0.05-1.0（MuJoCo 适配）从全局 yaml 移回 MuJoCo 分支，恢复上游默认（0.05 / 0.001 / 0.5）
+4. **删除 v14/v14b 实验块**：g1_dyn_reinit（硬编码层索引）、g1_dyn_freeze_backbone
+
+审计结论#1（BC loss 来源路径）：aux 路径与 raw 路径的 action_mean 是同一个张量（分叉只影响 aux loss 计算，不影响动作），此前 std 0.027 vs 0.286 的观测差异实为权重未加载所致，无需代码修改。
