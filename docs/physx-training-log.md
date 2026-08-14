@@ -1122,3 +1122,13 @@ resume 训练正常运行 50 iter 后在 iter 150 保存时崩溃 — 但失败�
 **完整 BC warmup 已启动**: 4096 envs × 16 DDP × 300 iter，全新从 SONIC release 起步，trust=0 纯 ref rollout，ori/ank=0.35 + IGNORE_TERM=1 + ROOT_Z_OFFSET=0.04，checkpoint 写 /dev/shm/physx_runs/bc_walking_fixed（避开 overlay 压力）。log: /tmp/physx_bc_full_20260814_052709.log，PID 165024，ETA ~70min。
 
 旧物理 run 目录（logs_rl 14G）暂保留未删（备份未全部确认），不阻塞新训练。
+
+### Phase 3 关键修复: BC checkpoint 加载键错误 (08-14)
+
+**症状**: 修复物理上 PPO/BC@trust>0 的 rollout 全员 1-2 步死，而同策略评测 (act_inference) 存活 19.6-30.8。排查链: σ 采样 → 噪声 → NPU 前向 → is_training 路径 → 注意力掩码，全部排除。
+
+**根因**: `train_agent_trl.py` 用 `_sd.get("policy", _sd)` 加载 BC checkpoint，但 checkpoint 的 actor 存于 `policy_state_dict` 键（评测脚本读的正是这个）→ 回退加载整个 dict → 键全不匹配 (missing=55) → **BC 权重从未进入训练模型**，PPO 从未训练的 SONIC release 权重起步（输出 std 0.027 vs 评测 0.286）。
+
+**修复**: 依次尝试 `actor_model_state_dict` / `policy_state_dict` / `policy`。加载后 missing=0。BC@trust=0.5 阶梯 length 2.05 → **14.4 @ iter 1**。
+
+**教训**: checkpoint 加载必须打印 missing/unexpected 并核对——55 missing 从一开始就在日志里，但旧物理对近零动作有容忍度，掩盖了问题。
