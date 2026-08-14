@@ -421,12 +421,7 @@ class Actor(nn.Module):
             ``action_mean``, ``action_sigma``, and optionally ``obs_dict``.
         """
         episode_attnmask = self._update_obs_buffer(obs_dict, episode_attnmask, cur_dones)
-        # PhysX fix (08-14): rollout must use the raw forward path
-        # (is_training=False), matching act_inference used by eval.  The aux
-        # path (is_training=True) was previously selected by deterministic_
-        # rollout and its action_mean never learned the reference action
-        # (squashed output, std 0.027 vs 0.286 on the raw path).
-        is_training = kwargs.pop("is_training", False)
+        is_training = kwargs.pop("is_training", self.deterministic_rollout)
         self.update_distribution(
             obs_dict=self.obs_dict_buffer,
             episode_attnmask=episode_attnmask,
