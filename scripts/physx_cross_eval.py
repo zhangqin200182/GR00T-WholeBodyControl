@@ -90,6 +90,8 @@ def main():
     parser.add_argument("--motion_seed", type=int, default=0,
                         help="Deterministic reshuffle of env.motions so parallel "
                              "evals sample identical motion clips")
+    parser.add_argument("--trust", type=float, default=1.0,
+                        help="Action trust: 0.0 = pure ref PD baseline, 1.0 = policy")
     args = parser.parse_args()
 
     from omegaconf import OmegaConf
@@ -106,7 +108,7 @@ def main():
                        "ori_thresh": args.ori,
                        "ank_pos_thresh": args.ank,
                        "ank_h_mult": args.ank_h,
-                       "action_trust": 1.0,
+                       "action_trust": args.trust,
                        "ignore_terminations": False,
                        "skip_termination": False,
                        "max_episode_length": args.max_steps,
