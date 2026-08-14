@@ -419,6 +419,10 @@ def main(config: OmegaConf):
             env_config_dict["action_trust"] = float(os.environ["SONIC_PHYSX_ACTION_TRUST"])
         if os.environ.get("SONIC_PHYSX_HEIGHT_HINGE"):
             env_config_dict["height_hinge_weight"] = float(os.environ["SONIC_PHYSX_HEIGHT_HINGE"])
+        # Root height offset: with the corrected link frames the mocap foot
+        # hover (25-35mm) would start the foot boxes inside the ground and
+        # eject the robot.  0.04 is the scanned optimum (P0 fix, 08-14).
+        root_z_off = float(os.environ.get("SONIC_PHYSX_ROOT_Z_OFFSET", "0.04"))
         if is_enc_adapt or skip_term:
             env_config_dict["skip_termination"] = True
             logger.info(f"PhysX skip_termination=True (enc_adapt={is_enc_adapt}, skip_term={skip_term})")
@@ -436,6 +440,7 @@ def main(config: OmegaConf):
             model_xml="/gear_sonic_deploy/g1/g1_29dof_v17.xml",
             pkl_dir="/sample_data/robot_filtered",
             env_config=OmegaConf.create(env_config_dict),
+            root_z_offset=root_z_off,
         )
         # Build config with all keys the model init needs
         config_dict = OmegaConf.to_container(env_config, resolve=True)

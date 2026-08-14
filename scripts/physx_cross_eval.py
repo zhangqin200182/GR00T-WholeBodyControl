@@ -112,7 +112,7 @@ def main():
                        "max_episode_length": args.max_steps,
                    }),
                    native_dt=0.001961, decimation=10, pos_iters=8, vel_iters=1,
-                   static_pose=False, root_z_offset=0.0, standing_prob=0.0)
+                   static_pose=False, root_z_offset=0.04, standing_prob=0.0)
     # _load_motions shuffles with PID-dependent seed; reshuffle deterministically
     # so all eval processes sample identical clips in identical order
     env.motions = list(np.random.RandomState(args.motion_seed).permutation(env.motions))

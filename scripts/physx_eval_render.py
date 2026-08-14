@@ -31,7 +31,7 @@ def make_env(px, static_pose=False):
     from gear_sonic.envs.physx_env import PhysXEnv
     env = PhysXEnv(px, XML, PKL, config=None,
                    native_dt=0.001961, decimation=10, pos_iters=8, vel_iters=1,
-                   static_pose=static_pose, root_z_offset=0.0, standing_prob=0.0)
+                   static_pose=static_pose, root_z_offset=0.04, standing_prob=0.0)
     env.skip_termination = False
     env.alive_bonus = 0.0
     return env
