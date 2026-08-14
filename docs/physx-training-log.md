@@ -1151,3 +1151,7 @@ resume 训练正常运行 50 iter 后在 iter 150 保存时崩溃 — 但失败�
 ### PPO v2 重启 (08-14 14:16 UTC)
 
 首次 PPO v2 在 iter 276 被 SIGKILL——根因 /dev/shm 99% 满（旧物理 ppo_500iter 目录 12G 未清），save 从 iter 100 起连续失败 9 次。1300 checkpoint 已备份宿主 /root/backup_model_step_001300_oldphysics.pt，旧目录删除后 shm 28% 使用率。重启全新 PPO v2（missing=0 fail-fast 通过）。首次运行曲线：7.5 → 12.7 @276 iter（爬升慢但与旧物理 v1 同节奏，v1 到 1248 iter 才 26.6）。
+
+### PPO v2 第三次启动 (08-14 14:27 UTC)
+
+第二次启动失败：HCCL 端口冲突（error code 7，16666 已被绑定）——上次 SIGKILL 残留 8 个进程占着端口。pkill -9 清干净后重启成功（iter 1 length 7.6，与首跑一致）。教训：SIGKILL 后必须确认进程清零再重启。
