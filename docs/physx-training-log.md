@@ -1147,3 +1147,7 @@ resume 训练正常运行 50 iter 后在 iter 150 保存时崩溃 — 但失败�
 ### PPO v2 启动 (08-14 10:14 UTC)
 
 修复物理 + 管线修复后的首个完整 PPO：从 BC@t05-200 checkpoint（t05 训练最终 length 42.2）起步，trust=1.0，v6 配方（BC_COEF=1.0 + noise 0.03/0.05 + ori/ank=0.35 + IGNORE_TERM=1），无 hinge。fail-fast 通过（missing=0）。iter 1 length=7.5（全权控制裸生存，混合值 42 的 t05 起点符合"平庸策略 PPO 信号强"的 v6 经验）。checkpoint → /dev/shm/physx_runs/ppo_v2_fixed，300 iter。
+
+### PPO v2 重启 (08-14 14:16 UTC)
+
+首次 PPO v2 在 iter 276 被 SIGKILL——根因 /dev/shm 99% 满（旧物理 ppo_500iter 目录 12G 未清），save 从 iter 100 起连续失败 9 次。1300 checkpoint 已备份宿主 /root/backup_model_step_001300_oldphysics.pt，旧目录删除后 shm 28% 使用率。重启全新 PPO v2（missing=0 fail-fast 通过）。首次运行曲线：7.5 → 12.7 @276 iter（爬升慢但与旧物理 v1 同节奏，v1 到 1248 iter 才 26.6）。
