@@ -922,7 +922,13 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
             for i in range(self.num_steps_per_env):  # noqa: B007
                 # Compute the actions and values
                 # TODO: 1: unsqueeze to [B, 1, ...]  # noqa: TD002, TD003
-                policy_state_dict = self.policy_step(policy_model, obs_dict, cur_dones=dones)
+                # PhysX fix (08-14): pass cur_dones=None so policy_step builds
+                # the episode attention mask from storage dones (_orig_done).
+                # With cur_dones given, episode_attnmask=None and the
+                # transformer attends ACROSS envs — 256 different motions get
+                # averaged into near-zero actions (std 0.027 vs 0.286 at
+                # batch=1 eval).  The old broken physics tolerated this.
+                policy_state_dict = self.policy_step(policy_model, obs_dict, cur_dones=None)
 
                 # Append states to storage
                 for key, value in obs_dict.items():

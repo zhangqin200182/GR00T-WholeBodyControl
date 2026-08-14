@@ -638,7 +638,14 @@ def main(config: OmegaConf):
     if _bc_ckpt:
         import torch as _torch
         _sd = _torch.load(_bc_ckpt, map_location=device, weights_only=False)
-        _policy_sd = _sd.get("policy", _sd)
+        # Fix (08-14): checkpoints store the actor under "policy_state_dict"
+        # (same key physx_cross_eval.py reads).  The old "policy" lookup fell
+        # back to the whole checkpoint dict — keys never matched, the BC
+        # weights were silently skipped (missing=55) and PPO started from the
+        # untrained SONIC release weights (near-zero actions, step-1 death).
+        _policy_sd = (_sd.get("actor_model_state_dict")
+                      or _sd.get("policy_state_dict")
+                      or _sd.get("policy", _sd))
         missing, unexpected = policy.load_state_dict(_policy_sd, strict=False)
         logger.info(f"PhysX BC checkpoint loaded from {_bc_ckpt}: missing={len(missing)}, unexpected={len(unexpected)}")
         if missing:
