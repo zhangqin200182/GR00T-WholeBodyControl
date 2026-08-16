@@ -336,6 +336,24 @@ docs/NPU微调与Mac渲染指导.md           # 12 坑
 docs/EXPERIMENTS.md                    # 本文档
 ```
 
+### 训练曲线（TensorBoard 导出，`docs/assets/`）
+
+| 图 | 内容 | 看点 |
+|---|---|---|
+| `tb_rewards.png` | 奖励全程曲线 | step 5000 处的跳变=二轮奖励函数改版（非事故） |
+| `tb_length.png` | 长度全程曲线 | 三段式：一轮爬升→二轮重置→爆发→平台 |
+| `tb_entropy.png` / `tb_approxkl.png` | 策略健康度 | 无塌缩、无 KL 尖峰 |
+| `tb_value_loss.png` | 价值网络收敛 | — |
+
+### 关键视频（`docs/assets/`）
+
+| 视频 | 内容 |
+|---|---|
+| `isaac_official_weights.mp4` | 官方权重 Isaac 评估（对照组标准答案） |
+| `g1_walk_final_true.mp4` | 一轮 5000 诚实模式：站稳、不推进（局部最优实证） |
+| `g1_walk_r2_snap.mp4` / `_snap2.mp4` | **二轮快照：真步行，速度贴合参考 0.68 vs 0.71 m/s** |
+| `isaac_backtransfer_fall.mp4` | 微调权重回 Isaac 0.16 秒摔倒（对称性发现） |
+
 ## 9. 后续建议（优先级序）
 
 1. **数据扩展**：当前仅 2 条步行片段（80 秒），泛化天花板由数据决定；扩到几十~几百条后 1024 环境/8 卡 DDP 才有意义
