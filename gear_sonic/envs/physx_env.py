@@ -113,6 +113,7 @@ class PhysXEnv:
         self.ank_h_mult = getattr(config, "ank_h_mult", 1.0) if config else 1.0
         self.action_trust = getattr(config, "action_trust", 1.0) if config else 1.0
         self.height_hinge_weight = getattr(config, "height_hinge_weight", 0.0) if config else 0.0
+        self.ankle_hinge_weight = getattr(config, "ankle_hinge_weight", 0.0) if config else 0.0
 
         # ── Motions ──
         self.motions = self._load_motions(pkl_dir)
@@ -410,7 +411,26 @@ class PhysXEnv:
             dh = abs(root_pos[2] - ref_root_pos[2])
             r14 = self.height_hinge_weight * max(0.0, 1.0 - dh / h_thresh)
 
-        return float(r1+r2+r3+r4+r5+r6+r7+r8+r9+r10+r11+r12+r13+r14)
+        # Ankle hinge: the 0.20-threshold death diagnosis (08-16) showed the
+        # dominant failure is ankle horizontal-position error, marginally over
+        # the strict threshold (0.201-0.241 vs 0.200).  Mirror the height-hinge
+        # structure: full reward at zero error, linear ramp to 0 at the
+        # TRAINING ank_pos_thresh (0.35) — constant gradient where the existing
+        # tracking rewards flatten out.  Default 0.0 keeps eval scripts on the
+        # original reward.
+        r15 = 0.0
+        if self.ankle_hinge_weight > 0.0:
+            actual_body_pos, _ = self._get_body_state_fk()
+            ref_body_pos = self._ref_body_pos()
+            ankle_errs = []
+            for _name in ("left_ankle_roll_link", "right_ankle_roll_link"):
+                _idx = list(BODY_NAMES).index(_name)
+                _ref_aligned = ref_body_pos[_idx] - ref_root_pos + root_pos
+                ankle_errs.append(float(np.linalg.norm(_ref_aligned - actual_body_pos[_idx])))
+            ankle_err = float(np.mean(ankle_errs))
+            r15 = self.ankle_hinge_weight * max(0.0, 1.0 - ankle_err / self.ank_pos_thresh)
+
+        return float(r1+r2+r3+r4+r5+r6+r7+r8+r9+r10+r11+r12+r13+r14+r15)
 
     def _undesired_contact(self):
         # TODO: implement via scene.get_contacts() once T3 adds the API
