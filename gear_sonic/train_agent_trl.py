@@ -368,8 +368,8 @@ def main(config: OmegaConf):
         env = MuJoCoEnvManager(
             num_envs=local_envs,
             num_workers=getattr(config, "mujoco_workers", 160) // accelerator.num_processes,
-            model_xml="/gear_sonic_deploy/g1/g1_29dof_v17.xml",
-            pkl_dir="/sample_data/robot_filtered",
+            model_xml="gear_sonic_deploy/g1/g1_29dof.xml",
+            pkl_dir="sample_data/robot_filtered",
             env_config=OmegaConf.create({"alive_bonus": 0.0}),
         )
         # Build config with all keys the model init needs

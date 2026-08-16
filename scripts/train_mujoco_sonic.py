@@ -23,9 +23,12 @@ from gear_sonic.trl.utils.common import custom_instantiate
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-XML = "/root/GR00T-WholeBodyControl/gear_sonic_deploy/g1/g1_29dof.xml"
-PKL = "/root/GR00T-WholeBodyControl/sample_data/robot_filtered"
-CKPT = "/root/sonic-data/sonic_release/last.pt"
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+XML = os.environ.get(
+    "SONIC_XML", os.path.join(REPO_ROOT, "gear_sonic_deploy", "g1", "g1_29dof.xml")
+)
+PKL = os.path.join(REPO_ROOT, "sample_data", "robot_filtered")
+CKPT = os.environ.get("SONIC_CKPT", os.path.join(REPO_ROOT, "sonic_release", "last.pt"))
 
 TOKENIZER_OBS_DIMS = {
     "encoder_index": (3,),
@@ -41,6 +44,53 @@ TOKENIZER_OBS_DIMS = {
     "smpl_root_ori_b_multi_future": (10, 6),
     "joint_pos_multi_future_wrist_for_smpl": (10, 6),
 }
+
+
+CONFIG_YAML = os.path.join(REPO_ROOT, "sonic_release", "config.yaml")
+
+
+def build_model_from_release_config(device="cpu"):
+    """Build the full SONIC Actor exactly as trained, from the released config.yaml.
+
+    The released config references the internal NVIDIA module root ``groot.rl.``;
+    rewrite it to the open-sourced ``gear_sonic.`` package (BaseModule lives at a
+    different internal path; training-only targets like PPOIM are never instantiated).
+    """
+    with open(CONFIG_YAML) as f:
+        raw = f.read()
+    raw = raw.replace("groot.rl.agents.modules.modules.BaseModule",
+                      "gear_sonic.trl.modules.base_module.BaseModule")
+    raw = raw.replace("groot.rl.trl.", "gear_sonic.trl.")
+    full_cfg = OmegaConf.create(raw)
+    # Stub out Hydra runtime resolvers that only exist during training launches
+    OmegaConf.register_new_resolver("hydra", lambda *a, **k: "stub", replace=True)
+    OmegaConf.register_new_resolver("now", lambda *a, **k: "stub", replace=True)
+    OmegaConf.resolve(full_cfg.algo.config)
+    algo_cfg = full_cfg.algo.config
+
+    env_config = OmegaConf.create({
+        "obs": {
+            "obs_dims": {"actor_obs": 930, "critic_obs": 1645, "tokenizer": 1761},
+            "obs_dict": {},
+            "group_obs_dims": {"tokenizer": TOKENIZER_OBS_DIMS},
+            "group_obs_names": {"tokenizer": list(TOKENIZER_OBS_DIMS.keys())},
+        },
+        "robot": {
+            "actions_dim": 29,
+            "num_joints": 29,
+            "algo_obs_dim_dict": {"actor_obs": 930, "critic_obs": 1645, "tokenizer": 1761},
+        },
+        "rewards": {"num_critics": 1},
+        "num_envs": 1,
+    })
+
+    actor = custom_instantiate(
+        algo_cfg.actor,
+        env_config=env_config,
+        algo_config=algo_cfg,
+        _resolve=False,
+    ).to(device)
+    return actor, None, env_config
 
 
 def build_model(device="cpu"):
@@ -182,7 +232,7 @@ def main():
 
     # Build model and load checkpoint
     device = "cpu"
-    actor, critic, _ = build_model(device)
+    actor, _, _ = build_model_from_release_config(device)
     ckpt = torch.load(CKPT, map_location=device, weights_only=False)
 
     if "actor_model_state_dict" in ckpt:
@@ -201,9 +251,9 @@ def main():
     n_params = sum(p.numel() for p in actor.parameters())
     logger.info(f"Model loaded: {n_params/1e6:.1f}M params")
 
-    # Warmup: one step to fill SHM
-    logger.info("Warmup step...")
-    _, _, _, _ = env.step(np.random.uniform(-0.2, 0.2, (num_envs, NUM_DOF)).astype(np.float32))
+    # NOTE: workers write clean post-reset obs into SHM at startup; a random-action
+    # warmup step would overwrite them with post-impact obs (jvel spikes ~±190)
+    # and poison the first policy input. Skip it.
 
     # ── Inference loop ──
     actor.eval()
@@ -215,22 +265,37 @@ def main():
     total_rewards = np.zeros(num_envs, dtype=np.float32)
     episode_lengths = np.zeros(num_envs, dtype=np.int32)
     terminations = np.zeros(num_envs, dtype=np.int32)
+    _term_steps = []
 
     t0 = time.perf_counter()
     for step in range(num_steps):
         with torch.no_grad():
             actions = actor.act_inference(obs_dict, cur_dones=None)
         actions_np = actions.cpu().numpy()
-        # Model outputs outside [-1,1] by design (Isaac Sim env clips later).
-        # MuJoCoEnv expects normalized actions; clamp here.
-        actions_np = np.clip(actions_np, -1, 1)
+        if step == 0:
+            logger.info(
+                f"Action stats @step0 (raw, pre-clip): mean={actions_np.mean():.2f} "
+                f"std={actions_np.std():.2f} range=[{actions_np.min():.1f},"
+                f"{actions_np.max():.1f}]"
+            )
+        # Isaac's action mapping (default_pos + 0.25*effort/stiffness * action) is
+        # now applied inside MuJoCoEnv; raw actions pass through unclamped and the
+        # resulting joint targets are clipped to joint ranges there.
 
         next_obs, rewards, dones, info = env.step(actions_np)
         next_obs = {k: v.to(device) for k, v in next_obs.items()}
+        if step == 0:
+            logger.info(
+                f"Action stats @step0: mean={actions_np.mean():.2f} "
+                f"std={actions_np.std():.2f} range=[{actions_np.min():.1f},"
+                f"{actions_np.max():.1f}]"
+            )
 
         total_rewards += rewards.numpy()
         episode_lengths += 1
         terminations += dones.numpy().astype(np.int32)
+        if dones.any() and len(_term_steps) < 40:
+            _term_steps.append((step, int(dones.sum())))
 
         obs_dict = next_obs
 
@@ -241,8 +306,12 @@ def main():
     term_rate = terminations.mean()
     mean_reward = total_rewards.mean()
 
+    logger.info(f"First terminations (step, n_done): {_term_steps}")
     logger.info(f"Results: reward={mean_reward:.2f} term_rate={term_rate:.3f} "
                 f"ep_len={mean_ep_len:.1f} time={dt:.1f}s")
+    # Per-env breakdown: separate "a few hard motions" from "uniform instability"
+    for e in range(num_envs):
+        logger.info(f"  env{e:02d}: total_reward={total_rewards[e]:9.1f} falls={terminations[e]}")
 
     if term_rate < 0.1:
         logger.info("PASS: pretrained model walks stably in MuJoCoEnv")

@@ -58,17 +58,55 @@ class MuJoCoEnv:
             2.8798, 1.9199, 2.6180, 1.5708, 1.9722, 1.6144, 1.6144,  # left  arm
             2.8798, 1.9199, 2.6180, 1.5708, 1.9722, 1.6144, 1.6144,  # right arm
         ], dtype=np.float64)
-        # ── PD gains ──
-        self.kp = np.ones(self.nu) * 100.0; self.kd = np.ones(self.nu) * 5.0
-        # ── Per-joint torque limits ──
-        # actuator_forcelimited=False in this XML → parse joint actuatorfrcrange
-        torque = np.ones(self.nu) * 50.0  # default fallback
-        for i in range(self.model.nu):
-            jid = self.model.actuator_trnid[i, 0]  # joint id for this actuator
-            if jid >= 0 and self.model.jnt_actfrcrange is not None:
-                hi = self.model.jnt_actfrcrange[jid][1]
-                if hi > 1e-6: torque[i] = hi
-        self._torque_limit = torque
+        # ── Isaac Sim action space & per-joint PD (robots/g1.py, G1_CYLINDER_MODEL_12_DEX_CFG) ──
+        # Isaac action mapping: target = default_pos + (0.25 * effort / stiffness) * action.
+        # Stiffness/damping derive from armature (natural freq 10 Hz, damping ratio 2).
+        _nf = 10.0 * 2.0 * np.pi
+        _arm = {"5020": 0.003609725, "7520_14": 0.010177520, "7520_22": 0.025101925, "4010": 0.00425}
+        # joint suffix -> (effort_limit, armature_key, armature_mult, default_pos)
+        _jp = {
+            "hip_pitch": (139.0, "7520_22", 1.0, -0.312),
+            "hip_roll": (139.0, "7520_22", 1.0, 0.0),
+            "hip_yaw": (88.0, "7520_14", 1.0, 0.0),
+            "knee": (139.0, "7520_22", 1.0, 0.669),
+            "ankle_pitch": (50.0, "5020", 2.0, -0.363),
+            "ankle_roll": (50.0, "5020", 2.0, 0.0),
+            "waist_yaw": (88.0, "7520_14", 1.0, 0.0),
+            "waist_roll": (50.0, "5020", 2.0, 0.0),
+            "waist_pitch": (50.0, "5020", 2.0, 0.0),
+            "shoulder_pitch": (25.0, "5020", 1.0, 0.2),
+            "shoulder_roll": (25.0, "5020", 1.0, 0.0),
+            "shoulder_yaw": (25.0, "5020", 1.0, 0.0),
+            "elbow": (25.0, "5020", 1.0, 0.6),
+            "wrist_roll": (25.0, "5020", 1.0, 0.0),
+            "wrist_pitch": (5.0, "4010", 1.0, 0.0),
+            "wrist_yaw": (5.0, "4010", 1.0, 0.0),
+        }
+        self.act_scale = np.zeros(self.nu); self.act_offset = np.zeros(self.nu)
+        self.kp = np.zeros(self.nu); self.kd = np.zeros(self.nu)
+        self._torque_limit = np.zeros(self.nu)
+        self._jnt_lo = np.full(self.nu, -np.inf); self._jnt_hi = np.full(self.nu, np.inf)
+        for i in range(self.nu):
+            jid = self.model.actuator_trnid[i, 0]
+            name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_JOINT, jid)
+            base = name.replace("_joint", "")
+            suffix = base.split("_", 1)[1] if base.startswith(("left_", "right_")) else base
+            effort, akey, amult, dflt = _jp[suffix]
+            stiffness = amult * _arm[akey] * _nf ** 2
+            self.act_scale[i] = 0.25 * effort / stiffness
+            self.act_offset[i] = dflt
+            if suffix == "shoulder_roll":
+                self.act_offset[i] = 0.2 if name.startswith("left") else -0.2
+            self.kp[i] = stiffness
+            self.kd[i] = 2.0 * 2.0 * amult * _arm[akey] * _nf
+            self._torque_limit[i] = effort
+            if self.model.jnt_limited[jid]:
+                self._jnt_lo[i], self._jnt_hi[i] = self.model.jnt_range[jid]
+            # Isaac implicit-actuator armature (reflected rotor inertia)
+            self.model.dof_armature[self.model.jnt_dofadr[jid]] = amult * _arm[akey]
+        # MuJoCo's default frictional constraint strength (impratio=1) lets the
+        # feet skate at several m/s under humanoid PD loads; crank it up.
+        self.model.opt.impratio = 30.0
         # ── MuJoCo solver: more iterations for QACC stability ──
         self.model.opt.iterations = 200
         # ── Body indices ──
@@ -202,7 +240,8 @@ class MuJoCoEnv:
     def _pd_control(self, action):
         # Hold the PD target constant across the control period; the torque is
         # recomputed every physics substep in _physics_step (matches Isaac Sim).
-        self._pd_target = action * self.jh + self.jm
+        self._pd_target = np.clip(
+            action * self.act_scale + self.act_offset, self._jnt_lo, self._jnt_hi)
 
     def _physics_step(self):
         for _ in range(self.decimation):
@@ -320,9 +359,9 @@ class MuJoCoEnv:
         root_quat = self.data.xquat[self._body_idx["pelvis"]]
         ref_root_pos = self._ref_root_pos(); ref_root_quat = self._ref_root_quat()
 
-        # 1. tracking_anchor_pos (w=0.5, σ=0.3)
+        # 1. tracking_anchor_pos (ROUND2: w=0.5→2.0, σ=0.3→0.2 — keep up or lose big)
         err = np.linalg.norm(root_pos - ref_root_pos)
-        r1 = 0.5 * np.exp(-err**2 / 0.09)
+        r1 = 2.0 * np.exp(-err**2 / 0.08)
         # 2. tracking_anchor_ori (w=0.5, σ=0.4)
         r2 = 0.5 * np.exp(-quat_error_magnitude(ref_root_quat, root_quat)**2 / 0.16)
         # 3. tracking_relative_body_pos (w=1.0, σ=0.3)
@@ -439,6 +478,10 @@ class MuJoCoEnv:
         root_quat = self.data.xquat[self._body_idx["pelvis"]]
         ref_h = ref_root_pos[2]; root_h = root_pos[2]
         term = False; h_thresh = 0.75 if ref_h < 0.5 else 0.15
+        # ROUND2: horizontal lag from the reference is lethal — "marking time
+        # with correct poses" must not survive.
+        if np.linalg.norm(root_pos[:2] - ref_root_pos[:2]) > 1.0:
+            return True, False
         # v11: relaxed orientation threshold (0.2=~26deg → 0.5=~45deg) and
         # ankle position threshold (0.2m → 0.4m) because MuJoCo's simplified
         # physics + PD control can't match Isaac Sim's precision.
@@ -494,7 +537,10 @@ class MuJoCoEnv:
 
     def step(self, action):
         if action.ndim == 2: action = action[0]
-        action = np.clip(action, -1, 1).astype(np.float64)
+        # No [-1,1] clip: with the Isaac action space (default_pos + 0.25*e/s*action)
+        # raw policy actions legitimately exceed 1; safety comes from clipping the
+        # resulting joint target to its range inside _pd_control.
+        action = action.astype(np.float64)
         # Update action history before PD
         self._ah[:-1] = self._ah[1:]; self._ah[-1] = action
         self._pd_control(action); self._physics_step()

@@ -120,8 +120,14 @@ class ModelSaveCallback(TrainerCallback):
     ):
         if model is not None:
             # Save model, optimizer, scheduler and training state
-            _state = copy.deepcopy(state)
-            _state.__dict__.pop("log_history")
+            try:
+                _state = copy.deepcopy(state)
+            except Exception:
+                # NPU: deepcopy can fail on byte-storage tensors (e.g. FSQ token
+                # indices); fall back to shallow copy, torch.save stores current
+                # values either way.
+                _state = copy.copy(state)
+            _state.__dict__.pop("log_history", None)
             checkpoint = {
                 "policy_state_dict": model.policy.state_dict(),
                 "value_state_dict": (

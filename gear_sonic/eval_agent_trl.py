@@ -244,6 +244,10 @@ def main(override_config: omegaconf.OmegaConf):
         with filelock.FileLock(_lock_path):
             app_launcher = AppLauncher(args_cli)
         simulation_app = app_launcher.app  # noqa: F841
+        # Enable the URDF importer extension (required by UrdfFileCfg spawners)
+        import omni.kit.app
+        _ext_mgr = omni.kit.app.get_app_interface().get_extension_manager()
+        _ext_mgr.set_extension_enabled_immediate("isaacsim.asset.importer.urdf", True)
 
     import torch
 
