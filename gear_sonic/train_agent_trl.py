@@ -426,6 +426,8 @@ def main(config: OmegaConf):
             env_config_dict["height_hinge_weight"] = float(os.environ["SONIC_PHYSX_HEIGHT_HINGE"])
         if os.environ.get("SONIC_PHYSX_ANKLE_HINGE"):
             env_config_dict["ankle_hinge_weight"] = float(os.environ["SONIC_PHYSX_ANKLE_HINGE"])
+        if os.environ.get("SONIC_PHYSX_ANKLE_VEL_PENALTY"):
+            env_config_dict["ankle_vel_penalty_weight"] = float(os.environ["SONIC_PHYSX_ANKLE_VEL_PENALTY"])
         # Root height offset: with the corrected link frames the mocap foot
         # hover (25-35mm) would start the foot boxes inside the ground and
         # eject the robot.  0.04 is the scanned optimum (P0 fix, 08-14).

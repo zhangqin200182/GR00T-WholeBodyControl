@@ -114,6 +114,7 @@ class PhysXEnv:
         self.action_trust = getattr(config, "action_trust", 1.0) if config else 1.0
         self.height_hinge_weight = getattr(config, "height_hinge_weight", 0.0) if config else 0.0
         self.ankle_hinge_weight = getattr(config, "ankle_hinge_weight", 0.0) if config else 0.0
+        self.ankle_vel_penalty_weight = getattr(config, "ankle_vel_penalty_weight", 0.0) if config else 0.0
 
         # ── Motions ──
         self.motions = self._load_motions(pkl_dir)
@@ -430,7 +431,18 @@ class PhysXEnv:
             ankle_err = float(np.mean(ankle_errs))
             r15 = self.ankle_hinge_weight * max(0.0, 1.0 - ankle_err / self.ank_pos_thresh)
 
-        return float(r1+r2+r3+r4+r5+r6+r7+r8+r9+r10+r11+r12+r13+r14+r15)
+        # Ankle velocity penalty: the ankle hinge taught the policy to pump
+        # the ankles at high frequency (jitter 32-116 mrad/step vs 19-28 for
+        # the pre-hinge policy — render visibly shaky).  Punish ankle joint
+        # speed so tight ankle tracking must come from smooth control.
+        # Typical values: mean_sq 3.0 (normal) vs 4.4 (hinge-jittery).
+        r16 = 0.0
+        if self.ankle_vel_penalty_weight > 0.0:
+            qvel = self.art.get_joint_velocities()
+            ankle_msq = float(np.mean(qvel[[4, 5, 10, 11]] ** 2))
+            r16 = -self.ankle_vel_penalty_weight * ankle_msq
+
+        return float(r1+r2+r3+r4+r5+r6+r7+r8+r9+r10+r11+r12+r13+r14+r15+r16)
 
     def _undesired_contact(self):
         # TODO: implement via scene.get_contacts() once T3 adds the API
