@@ -30,6 +30,12 @@ class MuJoCoEnv:
     """Single MuJoCo G1 environment — SONIC-compatible obs/reward/termination."""
 
     def __init__(self, model_xml, pkl_dir, config=None):
+        # Normalize dict configs (Mac scripts pass dicts; NPU passes OmegaConf)
+        # so getattr access below works for both. This also fixes the
+        # long-standing silent miss of ignore_terminations for dict callers.
+        if isinstance(config, dict):
+            from types import SimpleNamespace
+            config = SimpleNamespace(**config)
         # ── MuJoCo simulation model ──
         self.model = mujoco.MjModel.from_xml_path(model_xml)
         self.data = mujoco.MjData(self.model)
@@ -109,6 +115,24 @@ class MuJoCoEnv:
         self.model.opt.impratio = 30.0
         # ── MuJoCo solver: more iterations for QACC stability ──
         self.model.opt.iterations = 200
+        # ── E14b domain randomization (config.domain_rand): each env draws its own
+        # physics so the policy cannot overfit one contact regime (anti-specialization,
+        # 验收评测标准 G4). Ranges: friction ×0.7-1.3, mass ×0.9-1.1, hardened contact
+        # timeconst ×0.8-2.0 (0.005→0.004-0.010), torque limit ×0.9-1.1, action delay 0-2.
+        self.domain_rand = bool(getattr(config, "domain_rand", False)) if config else False
+        self._action_delay = 0
+        self._delay_buf = []
+        if self.domain_rand:
+            _rng = np.random.RandomState(os.getpid() + id(self) % 100000)
+            self.model.geom_friction[:] = self.model.geom_friction * _rng.uniform(0.7, 1.3)
+            _ms = _rng.uniform(0.9, 1.1)
+            self.model.body_mass[:] = self.model.body_mass * _ms
+            self.model.body_inertia[:] = self.model.body_inertia * _ms * _ms
+            for _g in range(self.model.ngeom):
+                if 0.0 < self.model.geom_solref[_g, 0] < 0.02:  # hardened geoms only
+                    self.model.geom_solref[_g, 0] *= _rng.uniform(0.8, 2.0)
+            self._torque_limit *= _rng.uniform(0.9, 1.1)
+            self._action_delay = int(_rng.randint(0, 3))
         # ── Body indices ──
         self._body_idx = {n: mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, n) for n in BODY_NAMES}
         self._body_indices = np.array([self._body_idx[n] for n in BODY_NAMES])
@@ -512,6 +536,7 @@ class MuJoCoEnv:
     # Lifecycle
     # ═══════════════════════════════════════════════════════════════════
     def reset(self):
+        self._delay_buf = []
         self._sample_motion()
         idx = int(self._ref_time * self._ref_fps)
         ref_q0 = self._ref_dof[idx]
@@ -541,6 +566,11 @@ class MuJoCoEnv:
         # raw policy actions legitimately exceed 1; safety comes from clipping the
         # resulting joint target to its range inside _pd_control.
         action = action.astype(np.float64)
+        if self._action_delay:
+            self._delay_buf.append(action)
+            action = self._delay_buf[0]
+            if len(self._delay_buf) > self._action_delay:
+                self._delay_buf.pop(0)
         # Update action history before PD
         self._ah[:-1] = self._ah[1:]; self._ah[-1] = action
         self._pd_control(action); self._physics_step()
