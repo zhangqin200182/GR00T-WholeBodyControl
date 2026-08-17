@@ -678,9 +678,14 @@ def main(config: OmegaConf):
         pretrained_cfg = config.algo.config.pretrained_model
         sd_key = pretrained_cfg.get("state_dict_key", "state_dict")
         strict = pretrained_cfg.get("strict", True)
-        state_dict = torch.load(pretrained_cfg.path, map_location=device, weights_only=False)[
-            sd_key
-        ]
+        try:
+            state_dict = torch.load(pretrained_cfg.path, map_location=device, weights_only=False)[
+                sd_key
+            ]
+        except AttributeError:
+            # Release checkpoint saved by the TRL fork — stub loader.
+            from gear_sonic.utils.release_ckpt import load_release
+            state_dict = load_release(pretrained_cfg.path)[sd_key]
         for (
             module_name,
             state_dict_key,

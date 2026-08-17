@@ -67,12 +67,20 @@ def make_model(ckpt_path):
 
     model = custom_instantiate(algo_cfg.actor, env_config=env_config,
                                algo_config=algo_cfg, _resolve=False).to("cpu")
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    try:
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    except AttributeError:
+        # Release checkpoint saved by the TRL fork (missing classes in the
+        # installed trl) — fall back to the stub loader.
+        from gear_sonic.utils.release_ckpt import load_release
+        ckpt = load_release(ckpt_path)
     sd = (ckpt.get("actor_model_state_dict") or ckpt.get("policy_state_dict")
           or ckpt.get("model_state_dict") or ckpt.get("policy"))
     if sd is None:
         raise ValueError(f"Cannot find model state in checkpoint: {list(ckpt.keys())}")
-    model.load_state_dict(sd, strict=False)
+    missing, unexpected = model.load_state_dict(sd, strict=False)
+    if missing or unexpected:
+        raise ValueError(f"Checkpoint key mismatch: missing={len(missing)}, unexpected={len(unexpected)}")
     model.eval()
     model.init_rollout()
     return model
