@@ -190,11 +190,13 @@ hip_pitch/hip_roll 的 `actuatorfrcrange` 从 ±88 改为 ±139（与 Isaac CFG 
 
 1. [x] vel-penalty 1600 训练完成 → 旧空间收尾评测（对照基线：**209.4/165.0/42.1 @ 0.35/0.30/0.20**）
 2. [ ] **前置：release 权重加载**——配置 `pretrained_model` 路径加载 `/root/sonic_release/last.pt` + 键核对 + 评测脚本同步支持（没有它实验一无法执行）
-3. [ ] **前置：obs 对齐核对**（第 ⓪ 层）——proprio 顺序/单位/归一化 vs Isaac 定义
-4. [ ] 实验一实现（`isaac_action_space` 开关 + **硬编码 CFG 逐关节参数表**；r8 关节限位惩罚保持 jm/jh 不变，与动作空间正交）
-5. [ ] 实验一评测（release 零样本 + ref PD 重测）——**判据量化：三阈值交叉评测均值 ≥ 新空间 PD 基线（≥31 步）才算成功**
-6. [ ] 实验二实现（kp_drive 解析换算 + 小扫描）
-7. [ ] 实验二评测
-8. [ ] 实验三（降级）：XML hip_pitch/hip_roll 限幅 ±88→±139
-9. [ ] 决策（决策树）→ Phase C（含新空间增益重扫）
-10. [ ] Phase D：Isaac 回传 + 跨片段评测 + 渲染人检
+3. [ ] **前置：参数表权威提取**——从 `gear_sonic_deploy/.../policy_parameters.hpp` 逐关节提取 act_scale/act_offset/kp/kd/effort（部署栈是最终语义来源），与同事 E3 表交叉核对，不一致以部署代码为准
+4. [ ] **前置：obs 对齐核对**（第 ⓪ 层）——proprio 顺序/单位/归一化 vs Isaac 定义
+5. [ ] 实验一实现（`isaac_action_space` 开关 + **硬编码部署栈逐关节参数表**；r8 关节限位惩罚保持 jm/jh 不变，与动作空间正交）
+6. [ ] 实验一评测（release 零样本 + ref PD 重测）——**判据**：release 零样本应能走**完整动捕段（数百步）**（对齐达标线）；ref PD ≥31 步仅是最低物理可行性门槛
+7. [ ] 实验二实现（kp_drive 解析换算 + 小扫描）
+8. [ ] 实验二评测
+9. [ ] 实验三（降级）：XML hip_pitch/hip_roll 限幅 ±88→±139
+10. [ ] 决策（决策树）→ **冻结对齐后的环境配置为版本化标准训练平台；release 零样本成为此后所有环境改动的回归测试**
+11. [ ] Phase C：对齐环境随机权重训练（含新空间增益重扫）
+12. [ ] Phase D：部署栈兼容验证（用 policy_parameters.hpp 数值在 sim 内执行策略，确认输出语义与真机部署一致）+ Isaac 回传 + 跨片段评测 + 渲染人检；真机实测为远期里程碑
