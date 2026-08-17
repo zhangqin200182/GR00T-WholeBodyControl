@@ -1277,3 +1277,63 @@ obs 审计代理报告 6 处与上游 Isaac 定义的错位，已修复 4 处（
 | 30 | 16 | 24.00 | 110.6 |
 
 **结论**：存活步数全网格饱和在 **24-25 步**（噪声带 23.7-25.1）；kd↑ 只提升平滑度（reward 95→138 单调升）不提升存活。**增益杠杆已耗尽**——release 零样本 ~25 步 ≈ PD 基线 27 是**物理保真度差距**（驱动动力学近似/接触/惯量），不是增益或 obs 问题。实验二完成，进入 #18 决策。
+
+### Isaac 动力学对齐启动 (08-17)
+
+用户定调：与 Isaac 动力学模型逐项对齐（同一引擎、两组配置）。路径：①测 FORCE 驱动 → ②静态参数审计（每改一项 release 零样本重测，25 步为回归基线）。
+
+**① FORCE 驱动模式测试（负结果）**：loader 增加 FORCE 分支（kp/kd 原始 Isaac 值 + effort 限幅 = Isaac 驱动语义原样），bindings 早已支持 eFORCE。12 episodes：
+- FORCE release 零样本 **17.33**（vs analytical 25.6）——更差
+- FORCE ref PD **27.17**（≈ analytical PD 27.0）
+- eACCELERATION 原始 kp/kd（RAW，"惯量化"假设）release **14.50**、PD 15.92——太软，直接垮
+- **分析**：policy 在 FORCE-raw 下比纯 PD 还差 → 力矩域软 PD 不是 policy 的世界；analytical eACCELERATION（mult=10 有效 kp≈10×Isaac）仍是当前最优 → 剩余差距不在驱动增益单变量。
+
+**② 静态参数审计（XML vs Isaac main.urdf + g1.py CFG）**：找到 5 类差距：
+1. **关节摩擦**：XML 29 关节 frictionloss 0.2-3.0（P1.5 时代为 MuJoCo 稳定性加的），Isaac main.urdf **全 0**。已改 XML → 0。
+2. **torso 质量**：XML 9.598 vs Isaac 6.78 + head 1.036 = **7.816**（XML torso 无 head link，质量含 head + 1.78kg 幻影）。已改 mass → 7.816（diaginertia 保留，已含 head 的 Steiner 项）。waist_roll 0.047→0.086 同步。
+3. **求解器**：Isaac pos_iters=8 **vel_iters=4**；我们 8/1。待改（batch 2）。
+4. **dt**：Isaac sim_dt=0.005 decimation=4（50Hz）；我们 0.001961×10（51Hz）。待改（batch 2，需重扫增益）。
+5. **armature**：Isaac 逐关节 armature（0.0251/0.0102/0.0036×2/0.00425），XML/bindings 无。待改（batch 3，需 bindings 支持）。
+另有 velocity_limit_sim 逐组（20-37 rad/s）、max_depenetration_velocity=1.0、wrist_yaw 手部质量模型差异（0.255 vs Isaac 0.085+手链 ~0.78）——记入 audit 清单。
+
+### Isaac 动力学对齐进展汇总 (08-17 晚)
+
+**全杠杆评测表**（release 零样本，isaac space，12 episodes，ori/ank=0.35）：
+
+| 配置 | release | ref PD | 备注 |
+|------|---------|--------|------|
+| analytical mult=10 kd=8（基线） | 25.6 | 27.0 | 实验二最优 |
+| + obs 对齐修复 | 25.08 | — | 无变化 |
+| FORCE 驱动（原始 kp/kd+effort） | 17.33 | 27.17 | 更差，力矩域软 PD 非 policy 世界 |
+| eACCELERATION 原始 kp/kd | 14.50 | 15.92 | 太软，直接垮 |
+| + XML 摩擦=0 + torso 7.816 | **25.58** | 28.00 | PD 略升（reward 142→157），policy 无变化 |
+| + vel_iters=4 | 24.92 | — | 无变化 |
+| + Isaac dt 0.005×4 | 22.83 | — | 略降（增益需按新 dt 重扫） |
+
+**当前状态**：release 零样本硬钉在 ~25 步 ≈ PD 基线。已排除：动作空间（1.0→1.9 是主因，已修）、obs 布局、增益全网格、FORCE/RAW 驱动语义、关节摩擦、torso 质量、求解器迭代数、dt。**剩余未测**：armature（bindings 需加 setArmature）、velocity limits（bindings 无 maxJointVelocity）、depenetration velocity、contactOffset（我们 0.005，Isaac 默认待查）。
+
+**下一步**：① release 零样本死亡模式诊断（25 步时挂在哪——ori/ank_pos/高度，与训练期 0.20 诊断的"踝位置漂移 70%"对照）② batch 3：armature 支持（C++ 改动）③ 若 armature 后仍无突破 → 按用户框架结论："残余差距在引擎时序层"，进入决策。
+
+### Batch 3：armature / velocity limits / depenetration (08-17 晚)
+
+**实现**（commit ed2a03b）：bindings 暴露 `setArmature` / `setMaxJointVelocity`（PxArticulationJointReducedCoordinate 原生 API，默认 0.0 / 100.0）与逐 link `setMaxDepenetrationVelocity`；loader 新增 `_ISAAC_ARMATURE` / `_ISAAC_VEL_LIMIT` 逐关节表（值取自 g1.py 电机类常量，与 policy_parameters.hpp 一致；Isaac 的 kp/kd 本身由 armature 推导：kp=armature·ω²）。默认开启，`SONIC_PHYSX_ARMATURE/_VEL_LIMIT/_DEPEN=0` 可关。同时补齐死亡模式诊断 plumbing：`_check_termination` 的 term_reason 经 info 传出，cross_eval 逐 episode 打印原因并分类计数。
+
+**评测矩阵**（release / ref PD，0.35/0.35，12 eps，analytical 10/8 + isaac space）：
+
+| 配置 | release | PD | 备注 |
+|------|---------|-----|------|
+| 基线（三开关 OFF）| 25.58 (rew 97.1) | 28.00 (157.2) | 复现历史 25.6/27.0 ✓ |
+| +armature | 26.67 (101.9) | **34.67** (199.1) | PD +24% 是硬信号 |
+| +armature mult∈{1,5,20} | 26.00/26.75/26.00 | — | 存活对 mult 平坦；死亡构成随 mult 漂移（低刚度 ori↑ ank↓）|
+| +armature+vel_limit | 26.67 | — | 行走速度下从未触发（20-37 rad/s 远超）|
+| **+armature+depen** | **35.25** (123.0) | 34.67（与 arm-only 相同）| 历史新高 |
+| +armature+vel+depen | 26.67（12eps 异常，见下）| — | — |
+| FORCE+armature | 11.58 | 27.42 | FORCE 路线再次证伪 |
+
+**复测（24 eps）**：armdp 32.92（seed 0）/ 29.21（seed 1）——depen 效果两 seed 确认；armall24 与 armdp24 **逐 episode 完全相同**（vel_limit 从不触发）；basedp12（depen 单独、无 armature）25.67 ≈ 基线——**depen 单独无效，armature×depen 是协同杠杆**（arm-only 26.67 / depen-only 25.67 / 组合 29.2-35.3）。armdp_pd 与 arm_pd 相同（34.67）——PD 追踪脚底干净无穿透事件，与策略侧形成机制对照。
+
+**12-eps armall 异常记录**：矩阵 armall_rel（v=1）ep0=11 vs armdp_rel ep0=60，同配置跨进程轨迹不同（vel=1 运行存在跨进程非确定性，疑似速度限幅冲量路径）；24-eps 复测 armall == armdp 说明常态下无影响。保留默认 ON（Isaac 语义），训练中仅摔落瞬间触发，符合 Isaac velocity_limit_sim 行为。
+
+**死亡模式诊断结论**：release 零样本 25 步死亡 ank_pos 11/12（92%），比训练期 70% 更集中——踝水平位置漂移是 release 侧第一死因；armature 修复后（mult=5）ank_pos 降至 7/12、ori 升至 5/12，两个竞争短板。
+
+**配置决策**：armature + depen 保留为默认（已在代码中默认开启）。release 零样本 25.58 → 32.92（+29%，双 seed 确认）、PD 28.0 → 34.7（+24%）。仍未达「数百步」全确认区——静态参数审计清单（armature 为最后一个大杠杆）基本耗尽，剩余 contactOffset 待查 / wrist_yaw 手质量（总量差 5%）预期低影响。
