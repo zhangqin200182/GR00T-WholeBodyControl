@@ -1248,3 +1248,33 @@ vel-penalty 1600 完成（训练内 27.1）。**三阈值评测：209.4/165.0/42
 **实验三**（XML hip 限幅 88→139）：23.3，噪声级。
 
 **当前最优配置**：isaac_action_space + DRIVE_ANALYTICAL=1 + MULT=10 + KD_MULT=8，release 零样本 ~25 步（"数十步 = 部分确认"区）。下一步：obs 对比报告（若发现错位则修）+ 增益精细扫描 + 若 release 能到数百步则环境冻结。
+
+### obs 对齐修复 + 负结果 (08-17)
+
+obs 审计代理报告 6 处与上游 Isaac 定义的错位，已修复 4 处（`physx_env.py`）：
+
+1. **actor obs 块顺序**：`[gdh, avh, jph, jvh, ah]` → `[avh, jph, jvh, ah, gdh]`（gravity 最后）。依据上游 `observations.py` PolicyAtmCfg 注释："Order matches PolicyCfg: base_ang_vel, joint_pos, joint_vel, actions, gravity_dir"。
+2. **joint_pos 相对化**：`jpos` → `jpos - _act_offset`（q − q_default，`joint_pos_wo_hand = joint_pos - default_joint_pos` 上游同款）。
+3. **cmd_mf / cmd_nonflat 关节序**：mujoco 序 → isaaclab 序（`ISAAC_REORDER` 置换，580 维 critic/tokenizer 块）；`cmd_lower` 同步改 12 腿关节 isaaclab 序。
+4. **critic base_lin_vel**：世界系差分 → body 系（`quat_apply(quat_inv(root_quat), ...)`）。
+
+未修 2 处（低影响）：SMPL 块全零（原始数据缺失）、obs 噪声注入缺失。
+
+**评测（负结果）**：release 零样本同配置（isaac space + ANALYTICAL + MULT=10 + KD_MULT=8，12 episodes）**25.08 步 vs 修复前 25.6** —— 无变化（噪声级）。结论：**obs 错位不是 release 零样本的瓶颈**。release 策略在 ~25 步 ≈ PD 基线 27.0，行为仍是"跟踪 ref 姿势"的兜底，未展现其学到的技能 → 剩余差距在**物理（驱动动力学）层**，不在 obs 层。mujoco_env.py 同期基线（209/165/42）同样是 gravity-first 布局（随机权重训练对内部一致性不敏感，不影响其数值）。
+
+**下一步**：增益精细扫描（kd_mult=8 仍在爬坡 +25%，阻尼侧可能仍有余量）；若扫不出数百步 → 进入 #18 决策（物理层差距 vs 接受部分确认进入 Phase C）。
+
+### obs 对齐修复 + 负结果 (08-17)
+
+obs 审计代理报告 6 处与上游 Isaac 定义的错位，已修复 4 处（`physx_env.py`）：
+
+1. **actor obs 块顺序**：`[gdh, avh, jph, jvh, ah]` → `[avh, jph, jvh, ah, gdh]`（gravity 最后）。依据上游 `observations.py` PolicyAtmCfg 注释："Order matches PolicyCfg: base_ang_vel, joint_pos, joint_vel, actions, gravity_dir"。
+2. **joint_pos 相对化**：`jpos` → `jpos - _act_offset`（q − q_default，`joint_pos_wo_hand = joint_pos - default_joint_pos` 上游同款）。
+3. **cmd_mf / cmd_nonflat 关节序**：mujoco 序 → isaaclab 序（`ISAAC_REORDER` 置换，580 维 critic/tokenizer 块）；`cmd_lower` 同步改 12 腿关节 isaaclab 序。
+4. **critic base_lin_vel**：世界系差分 → body 系（`quat_apply(quat_inv(root_quat), ...)`）。
+
+未修 2 处（低影响）：SMPL 块全零（原始数据缺失）、obs 噪声注入缺失。
+
+**评测（负结果）**：release 零样本同配置（isaac space + ANALYTICAL + MULT=10 + KD_MULT=8，12 episodes）**25.08 步 vs 修复前 25.6** —— 无变化（噪声级）。结论：**obs 错位不是 release 零样本的瓶颈**。release 策略在 ~25 步 ≈ PD 基线 27.0，行为仍是"跟踪 ref 姿势"的兜底，未展现其学到的技能 → 剩余差距在**物理（驱动动力学）层**，不在 obs 层。mujoco_env.py 同期基线（209/165/42）同样是 gravity-first 布局（随机权重训练对内部一致性不敏感，不影响其数值）。
+
+**下一步**：增益精细扫描（kd_mult=8 仍在爬坡 +25%，阻尼侧可能仍有余量）；若扫不出数百步 → 进入 #18 决策（物理层差距 vs 接受部分确认进入 Phase C）。

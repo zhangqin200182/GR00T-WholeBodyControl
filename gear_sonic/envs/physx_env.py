@@ -46,7 +46,15 @@ BODY_NAMES = (
 VR_3POINT_BODY = ("left_wrist_yaw_link", "right_wrist_yaw_link", "torso_link")
 VR_3POINT_OFFSETS = np.array([[0.18, -0.025, 0.0], [0.18, 0.025, 0.0],
                                [0.0, 0.0, 0.35]], dtype=np.float32)
-LOWER_JOINT_INDICES = list(range(12))
+# mujoco (XML) → isaaclab joint-order permutation (obs audit 08-17):
+# the release checkpoint's tokenizer/critic expect future_dof blocks in
+# IsaacLab order (L/R pairs, torso first); our XML/ref data is mujoco order.
+# ISAAC_REORDER[i] = mujoco index of the joint at isaaclab position i.
+ISAAC_REORDER = np.array([0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22,
+                          4, 10, 16, 23, 5, 11, 17, 24, 18, 25, 19, 26,
+                          20, 27, 21, 28], dtype=np.int64)
+# 12 leg joints (hip_pitch/roll/yaw, knee, ankle_pitch/roll × L/R) in isaaclab order
+LEG_ISAAC_INDICES = np.array([0, 1, 3, 4, 6, 7, 9, 10, 13, 14, 17, 18], dtype=np.int64)
 ACTOR_DIM = 930; CRITIC_DIM = 1645; TOKENIZER_DIM = 1761
 HIST = 10
 
@@ -323,6 +331,10 @@ class PhysXEnv:
                 "ref_action": self._ref_action()}
 
     def _compute_actor_obs(self):
+        # Isaac obs alignment (08-17, obs audit): block order is
+        # [ang_vel, joint_pos, joint_vel, actions, gravity] — gravity LAST.
+        # joint_pos is RELATIVE to the default pose (q - q_default), where
+        # q_default = the deploy-stack default_angles (= _act_offset).
         root_quat = self.art.get_root_world_pose()[1]
         g_body = quat_apply(quat_inv(root_quat), np.array([0, 0, -1]))
         # PhysX getRootAngularVelocity → world frame; convert to body frame (MuJoCo convention)
@@ -331,15 +343,16 @@ class PhysXEnv:
         jpos = self.art.get_joint_positions(); jvel = self.art.get_joint_velocities()
         self._shift_histories()
         self._gdh[-1] = g_body; self._avh[-1] = ang_vel
-        self._jph[-1] = jpos; self._jvh[-1] = jvel
+        self._jph[-1] = jpos - self._act_offset; self._jvh[-1] = jvel
         return np.concatenate([b.flatten() for b in
-            [self._gdh, self._avh, self._jph, self._jvh, self._ah]]).astype(np.float32)
+            [self._avh, self._jph, self._jvh, self._ah, self._gdh]]).astype(np.float32)
 
     def _compute_critic_obs(self):
         root_pos, root_quat = self.art.get_root_world_pose()
         ref_root_pos = self._ref_root_pos(); ref_root_quat = self._ref_root_quat()
 
-        future_pos = self._future_dof(); future_vel = self._future_dof_vel()
+        future_pos = self._future_dof()[:, ISAAC_REORDER]
+        future_vel = self._future_dof_vel()[:, ISAAC_REORDER]
         cmd_mf = np.concatenate([future_pos.flatten(), future_vel.flatten()])
         pos_b, ori_b = subtract_frame_transforms(root_pos, root_quat, ref_root_pos, ref_root_quat)
         mat = quat_to_matrix(ori_b); ori_6d = mat[..., :2].flatten()
@@ -350,7 +363,9 @@ class PhysXEnv:
         ori_parts = [quat_to_matrix(q)[:2].flatten() for q in body_quat_b]
         body_ori_flat = np.concatenate(ori_parts)
 
-        lin_vel = (root_pos - self._prev_root_pos) / self.ctrl_dt
+        # base_lin_vel must be in BODY frame (upstream convention), not world
+        lin_vel_world = (root_pos - self._prev_root_pos) / self.ctrl_dt
+        lin_vel = quat_apply(quat_inv(root_quat), lin_vel_world)
         self._lvh[-1] = lin_vel; self._prev_root_pos = root_pos.copy()
 
         parts = [cmd_mf, pos_b.flatten(), ori_6d, body_pos_b, body_ori_flat] + \
@@ -361,15 +376,16 @@ class PhysXEnv:
         root_quat = self.art.get_root_world_pose()[1]
         ref_root_pos = self._ref_root_pos(); ref_root_quat = self._ref_root_quat()
 
-        future_pos = self._future_dof(); future_vel = self._future_dof_vel()
+        future_pos = self._future_dof()[:, ISAAC_REORDER]
+        future_vel = self._future_dof_vel()[:, ISAAC_REORDER]
         cmd_nonflat = np.concatenate([future_pos, future_vel], axis=-1).flatten()
         future_rp = self._future_ref_root_pos(); cmd_z_mf = future_rp[:, 2:3].flatten()
         future_rq = self._future_ref_root_quat()
         root_q_e = np.tile(root_quat, (NUM_FUTURE, 1))
         rot_diff = quat_mul(quat_inv(root_q_e), future_rq)
         ori_mf = np.stack([quat_to_matrix(q) for q in rot_diff])[:, :2, :].flatten()
-        lower_pos = future_pos[:, LOWER_JOINT_INDICES]
-        lower_vel = future_vel[:, LOWER_JOINT_INDICES]
+        lower_pos = future_pos[:, LEG_ISAAC_INDICES]
+        lower_vel = future_vel[:, LEG_ISAAC_INDICES]
         cmd_lower = np.concatenate([lower_pos.flatten(), lower_vel.flatten()])
 
         ref_body_pos = self._ref_body_pos(); ref_body_quat = self._ref_body_quat()
