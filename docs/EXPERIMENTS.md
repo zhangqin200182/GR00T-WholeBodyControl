@@ -90,6 +90,7 @@
 | E10 | "不往前走"根因诊断 | Mac | 观测盲+掉队不判死+奖励太弱，三重宽容致局部最优 |
 | E11 | **二轮微调**（掉队判死+奖励×4+1024环境） | NPU+CPU | 速度贴合 0.58 vs 0.56 m/s，真推进 23.65m ✅ |
 | E12 | 收敛打磨（腿抖） | NPU（进行中） | 待收敛尾段+可选滤波/精修 |
+| E13 | **三轮：BONES-SEED 多动作扩展**（2→33 条课程） | Mac+NPU | 转换器逐位复现官方 PKL ✓；训练 11000→17000 进行中 |
 
 ---
 
@@ -197,6 +198,33 @@ SONIC_MUJOCO_ENV=1 + 256环境 × 64worker, 起点官方权重
 
 腿抖 = PPO 中期高探索档位（std 0.43）在确定性输出中的残留，预期随收敛（std 回落）减轻；兜底手段：部署端一阶低通滤波（15Hz）/ 低学习率精修轮 / 加重 action_rate 惩罚。
 
+### E13 · 三轮微调：BONES-SEED 多动作课程扩展（进行中）
+
+**动机**：前两轮只有 2 条步行片段（80 秒），泛化天花板由数据决定——"曲谱"太少。
+
+**数据集**：HuggingFace `bones-studio/seed`（BONES-SEED）g1 子集。23.5GB / 142,220 条 CSV（71,132 原始 + 71,088 镜像）/ 约 288 小时 / 120fps / 29-DOF 已重定向到 G1。受限访问，需在网页同意条款 + token 下载。
+
+**关键发现（本块最重要的结论）**：官方训练片段 `walk_forward_amateur_001__A001.pkl` 本身就出自该数据集的 210531 场次。用仓库自带的官方转换器 `gear_sonic/data_process/convert_soma_csv_to_motion_lib.py`（Bones-SEED 模式）转换其源 CSV，与官方发布的 PKL **逐元素完全一致**（dof / root_rot / root_trans_offset / pose_aa 最大差异全部 = 0.000000）——单位换算（cm→m、deg→rad）、欧拉约定（xyz 内旋）、关节顺序、120→30fps 降采样一次性全部验证通过，无需渲染抽查。
+
+**筛选**：20 类别配额（走/跑/跳/转/舞/上肢等）+ 步行/跑类镜像 → **33 条 / 10.3 分钟**（31 新 + 原 2 条）。数值门控剔除 4 条：爬行 ×2（骨盆 0.09m）、深蹲 ×2（0.21/0.29m）——深蹲类需奖励兼容低重心，留下轮。
+
+**训练**：从 11000（round-2 final，已备份 `last_round2_final_11000.pt`）续训至 17000，33 条动作均匀采样。课程扩展冲击符合预期：reward 3486 → 918（环境从纯步行换混合动作）→ 回升至 1900~2400 震荡，回合长度 221 → ~500 步。5.3s/迭代，约 9 小时。
+
+**最终结果（17000 迭代）**：训练 reward 3912 / 回合长 739。诚实模式逐动作评测（无裁剪、确定性、跟随参考原生时序）：
+
+| 动作 | 存活 | 速度 vs 参考 | 判定 |
+|---|---|---|---|
+| 步行（原 round-2 技能） | 1000/1000 步（满） | **0.64 vs 0.63 m/s** | ✅ 旧技能零遗忘，速度贴合 |
+| 舞蹈 padeburee | 846/850 步（整段） | 0.15 vs 0.29 | ✅ 整段跟完 |
+| 重跳落地 | 275 步 | 0.05 vs 0.03 | 🟡 稳定跟踪，慢漂移触发掉队线 |
+| 疾跑 like_crazy | 65 步 | 0.82 vs **1.79** | ❌ 33 条中最难项未解 |
+
+**评测端教训（复现 E10）**：带 ±1 裁剪评测时四动作全部 ~50 步暴毙——训练用原始动作，评测语义必须一致；换权重先对齐 clip 语义再下结论。
+
+**Isaac 回传（D 扫描第三点）**：17000 权重 4 环境 × 步行情景 → **4 步摔**（0.08s）。D 扫描完整版：官方 40s → round-1/5000 8 步 → round-2/11000 4 步 → round-3/17000 **4 步**——迁移性已贴地板：针尖物理上多训 6000 迭代 + 16 倍动作数据，引擎迁移零改善。**特化是物理问题而非数据/训练量问题，物理修复（E14）是唯一杠杆**。
+
+**E14 立项（物理修复轮）**：审计证实训练 XML 每脚碰撞体为 4×5mm 球（官方 motion-lib 的 FK 标记件被误用作动力学环境；官方动力学口径在 URDF：r=1cm 圆柱），且全文件零接触参数覆盖（MuJoCo 默认软接触）。穿透审计（中位 0.08mm）排除"搓行"，特化机制锁定为点支撑几何+弹性负载节律。方案：圆柱脚/胶囊脚（已生成）+ 接触硬化 + 128-worker 域随机化，从官方权重消融训练，评测门禁（PD 回放>30 步、变物理评测、2000 迭代 Isaac 回传）全程开启。
+
 ---
 
 ## 3. 核心方案：为什么微调能成立
@@ -290,10 +318,15 @@ SONIC_MUJOCO_ENV=1 + 256环境 × 64worker, 起点官方权重
 
 ### Mac / 通用
 - LFS 指针文件冒充网格（130 字节文本）→ `lfs_fetch.py` 走批量 API 下载 + `_rev_1_0` 变体网格别漏
+- **gwc-push 推送目录的 meshes 未拉全时，MuJoCo 加载 `g1_29dof.xml` 报 `stl_decoder` 错**（把指针文件当 STL 解析）——FK/渲染验证一律用完整 checkout 的 XML
+- **motion_lib PKL 是 joblib 压缩格式**：`pickle.load` 报 `invalid load key, 'x'`（zlib magic 0x78），必须 `joblib.load`
 - Git 直连慢/被 RST → ghfast.top 镜像 + HTTP/1.1
 - 推理 Python 环境必须是仓库内 `.venv_sim`；`MUJOCO_GL=cgl` 离屏渲染
 - **录制管线三坑**：±1 裁剪、上身覆盖 hack、参考相位锁定——对微调策略全部失真，诚实模式必须全部关闭
 - NPU 存的权重带 torch_npu pickle 引用 → 必须在 NPU 上抽 `policy_state_dict` 成纯 CPU 文件再跨机用
+- **BONES-SEED 是受限数据集**：网页点同意 + token 才能下载；大文件 curl 断点续传（`-C -`）中途会死，监控脚本要能自动重启；目标字节数以 HF API 的 `size` 字段为准（23,499,736,47 曾被转抄笔误成 23,599,973,647，差点误判下载不完整）
+- **CSV 列序 vs XML 关节序对比前先剔除 floating_base_joint**（freejoint 占 qpos 第 0 位），否则 29 列看似全部错位一位
+- macOS tar 包在 Linux 解包报 `LIBARCHIVE.xattr` 警告——无害，忽略
 
 ### 云 GPU（Isaac）
 - isaacsim 4.5 只有 cp310 轮子；2.3.2 要 isaacsim≥5.1 系、torch≥2.7 → 最终 py3.11+isaacsim5.0.0.0
@@ -307,6 +340,8 @@ SONIC_MUJOCO_ENV=1 + 256环境 × 64worker, 起点官方权重
 ### NPU（昇腾）
 - hydra 顶层新键必须 `+`；迭代数真参数是 `algo.config.num_learning_iterations`
 - resume 的 glob 会选中空目录 → 永远显式传 `checkpoint=路径`
+- **resume 续训把 output_dir 绑到 checkpoint 所在 run 目录**：新 `exp_var` 不会开新目录，`last.pt` 会被新进度覆盖——启动续训前先备份（`cp last.pt last_<轮次>.pt`）。TB 曲线因此连续，属可接受的副作用
+- **监控别用"两次检查的间隔"推算训练速率**（定时任务触发间隔 ≠ 墙钟间隔，曾据此误判"迭代停滞"）：用固定 2 分钟窗口实测迭代增量（本项目实测稳定 5.3s/iter）
 - 克隆不含 E3 修复的 `mujoco_env.py` → 重建必覆盖（本分支文件为准）
 - `copy.deepcopy(state)` 遇 torch_npu Byte storage 崩 → model_save_callback 加 try/except 退浅拷贝
 - 容器必须同路径挂载；单卡足够（瓶颈在 CPU 采集，不在 NPU）
@@ -321,7 +356,16 @@ docker exec sonic-train-zhouzhi bash -c "cd /data/z00666713/GR00T-WholeBodyContr
   +exp=stub_train exp_var=mujoco_ft2 +resume=true \
   checkpoint=logs_rl/TRL_G1_Stub/stub_train_mujoco_ft-20260815_214321/last.pt \
   algo.config.num_learning_iterations=11000 num_envs=1024 +mujoco_workers=128 \
-  use_wandb=false > /data/z00666713/mujoco_ft_r2.log 2>&1 &"
+  use_wandb=false > /data/z00666713/mujoco_ft_r3.log 2>&1 &"
+  # round-3 实际命令（checkpoint 指向 round-2 final，即同一 run 目录）：
+  #   exp_var=mujoco_ft3 checkpoint=logs_rl/TRL_G1_Stub/stub_train_mujoco_ft-20260815_214321/last.pt
+  #   algo.config.num_learning_iterations=17000 num_envs=1024 +mujoco_workers=128
+
+# ── 数据管线（BONES-SEED → motion PKL，Mac 上）──
+# 转换核心 = 仓库自带 gear_sonic/data_process/convert_soma_csv_to_motion_lib.py（Bones-SEED 模式）
+# 验证基准：转换 walk_forward_amateur_001__A001 源 CSV 与官方 PKL 逐位一致（max diff = 0）
+# 筛选+转换+门控脚本：bones_seed/select_and_convert_round3.py（33 条 → round3_pkls/）
+# 部署：PKL 放到 NPU sample_data/robot_filtered/<子目录>/，loader 递归 glob 自动并入
 
 # ── NPU：导出纯策略（跨机必需）──
 docker exec sonic-train-zhouzhi python3 -c "
@@ -375,7 +419,7 @@ docs/EXPERIMENTS.md                    # 本文档
 
 ## 9. 后续建议（优先级序）
 
-1. **数据扩展**：当前仅 2 条步行片段（80 秒），泛化天花板由数据决定；扩到几十~几百条后 1024 环境/8 卡 DDP 才有意义
+1. **数据扩展**：E13 进行中——BONES-SEED 33 条课程已上线（转换器逐位验证通过），数据全量在本地，后续可扩到几百条；跑通后 1024 环境/8 卡 DDP 才有意义
 2. 腿抖收尾：收敛后评估，必要时 15Hz 低通或精修轮
 3. 双引擎：若需 Isaac 兼容，混合训练或中间 checkpoint 双语测试（每 50 迭代都有存档）
 4. 真机路线：动作空间对齐 + 滤波部署是现成的 sim-to-real 起步件
