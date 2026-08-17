@@ -651,7 +651,11 @@ def main(config: OmegaConf):
         # (same key physx_cross_eval.py reads).  The old "policy" lookup fell
         # back to the whole checkpoint dict — keys never matched, the BC
         # weights were silently skipped (missing=55) and PPO started from the
-        # untrained SONIC release weights (near-zero actions, step-1 death).
+        # BC-untrained model (near-zero actions, step-1 death).
+        # Note (08-17): this model was never the SONIC release weights either
+        # — pretrained_model (below) was never configured for any PhysX run,
+        # so every run started from random init.  See
+        # docs/physx-alignment-experiment-plan.md §1.3.
         _policy_sd = (_sd.get("actor_model_state_dict")
                       or _sd.get("policy_state_dict")
                       or _sd.get("policy", _sd))
