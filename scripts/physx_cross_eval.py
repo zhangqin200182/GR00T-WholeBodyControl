@@ -6,6 +6,7 @@ length distribution. Used to compare policies trained under different
 thresholds under one common (strict) threshold setting.
 """
 import argparse, os, sys
+from collections import Counter
 import numpy as np
 
 # Must import physx_core before torch (fork+import safety)
@@ -102,6 +103,16 @@ def main():
                         help="Action trust: 0.0 = pure ref PD baseline, 1.0 = policy")
     parser.add_argument("--isaac-space", action="store_true",
                         help="Use the Isaac action space (target = offset + scale * action)")
+    parser.add_argument("--drive-type", default="ACCELERATION",
+                        choices=["ACCELERATION", "FORCE"],
+                        help="Articulation drive mode: FORCE = Isaac torque-domain "
+                             "PD semantics (raw kp/kd + effort limits)")
+    parser.add_argument("--vel-iters", type=int, default=1,
+                        help="Solver velocity iterations (Isaac CFG uses 4)")
+    parser.add_argument("--native-dt", type=float, default=0.001961,
+                        help="Physics substep dt (Isaac sim_dt = 0.005)")
+    parser.add_argument("--decimation", type=int, default=10,
+                        help="Substeps per control step (Isaac decimation = 4)")
     args = parser.parse_args()
 
     from omegaconf import OmegaConf
@@ -124,8 +135,10 @@ def main():
                        "skip_termination": False,
                        "max_episode_length": args.max_steps,
                    }),
-                   native_dt=0.001961, decimation=10, pos_iters=8, vel_iters=1,
-                   static_pose=False, root_z_offset=0.04, standing_prob=0.0)
+                   native_dt=args.native_dt, decimation=args.decimation,
+                   pos_iters=8, vel_iters=args.vel_iters,
+                   static_pose=False, root_z_offset=0.04, standing_prob=0.0,
+                   drive_type=args.drive_type)
     # _load_motions shuffles with PID-dependent seed; reshuffle deterministically
     # so all eval processes sample identical clips in identical order
     env.motions = list(np.random.RandomState(args.motion_seed).permutation(env.motions))
@@ -133,11 +146,12 @@ def main():
     print(f"Eval @ ori={args.ori}, ank_pos={args.ank}, ank_h={args.ank_h}, "
           f"episodes={args.episodes}", flush=True)
 
-    lengths, rewards = [], []
+    lengths, rewards, reasons = [], [], []
     with torch.no_grad():
         for ep in range(args.episodes):
             obs = env.reset()
             total = 0.0
+            reason = "survived"
             for s in range(args.max_steps):
                 obs_t = {k: torch.from_numpy(v).float().unsqueeze(0)
                          for k, v in obs.items()}
@@ -145,14 +159,30 @@ def main():
                 obs, r, done, info = env.step(a.squeeze(0).numpy())
                 total += r
                 if done:
+                    reason = info.get("term_reason", "") or "truncated"
                     break
             lengths.append(s + 1)
             rewards.append(total)
-            print(f"  ep{ep}: survived={s + 1}, reward={total:.1f}", flush=True)
+            reasons.append(reason)
+            print(f"  ep{ep}: survived={s + 1}, reward={total:.1f}, reason={reason}",
+                  flush=True)
 
     lengths = np.array(lengths)
+    cats = Counter()
+    for r in reasons:
+        if r == "survived":
+            cats["survived"] += 1
+        elif not r:
+            cats["truncated"] += 1
+        else:
+            if "height(" in r: cats["height"] += 1
+            if "ori(" in r: cats["ori"] += 1
+            if "_h(" in r: cats["body_h"] += 1
+            if "_pos(" in r: cats["ank_pos"] += 1
     print(f"RESULT: mean_len={lengths.mean():.2f} median={np.median(lengths):.1f} "
           f"min={lengths.min()} max={lengths.max()} mean_rew={np.mean(rewards):.1f}",
+          flush=True)
+    print("DEATH MODES: " + ", ".join(f"{k}={v}" for k, v in cats.most_common()),
           flush=True)
     return 0
 

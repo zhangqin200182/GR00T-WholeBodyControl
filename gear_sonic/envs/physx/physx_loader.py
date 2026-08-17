@@ -72,6 +72,42 @@ _M_EFF = {
     "wrist_roll": 0.001, "wrist_pitch": 0.005, "wrist_yaw": 0.002,
 }
 
+# Isaac per-joint armature (kg·m²) — reflected rotor inertia added to the
+# joint-space inertia.  Source: gear_sonic/envs/manager_env/robots/g1.py
+# ARMATURE_7520_22/7520_14/5020/4010 constants (identical to
+# gear_sonic_deploy policy_parameters.hpp).  Isaac's PD gains are DERIVED
+# from these (kp = armature·ω², ω = 10Hz), so they are the source of truth.
+_ISAAC_ARMATURE = {
+    "hip_pitch": 0.025101925, "hip_roll": 0.025101925, "knee": 0.025101925,
+    "hip_yaw": 0.010177520, "waist_yaw": 0.010177520,
+    "ankle_pitch": 0.00721945, "ankle_roll": 0.00721945,   # 2 × ARMATURE_5020
+    "waist_roll": 0.00721945, "waist_pitch": 0.00721945,   # 2 × ARMATURE_5020
+    "shoulder_pitch": 0.003609725, "shoulder_roll": 0.003609725,
+    "shoulder_yaw": 0.003609725, "elbow": 0.003609725,
+    "wrist_roll": 0.003609725,
+    "wrist_pitch": 0.00425, "wrist_yaw": 0.00425,
+}
+
+# Isaac velocity_limit_sim per group (rad/s), enforced by the solver via
+# per-axis joint-velocity impulses (PhysX setMaxJointVelocity, default 100).
+_ISAAC_VEL_LIMIT = {
+    "hip_yaw": 32.0,
+    "hip_pitch": 20.0, "hip_roll": 20.0, "knee": 20.0,
+    "ankle_pitch": 37.0, "ankle_roll": 37.0,
+    "waist_roll": 37.0, "waist_pitch": 37.0, "waist_yaw": 32.0,
+    "shoulder_pitch": 37.0, "shoulder_roll": 37.0, "shoulder_yaw": 37.0,
+    "elbow": 37.0, "wrist_roll": 37.0,
+    "wrist_pitch": 22.0, "wrist_yaw": 22.0,
+}
+
+
+def _lookup_joint_table(table, jname):
+    """Return the first value whose key is a substring of jname, else None."""
+    for pattern, val in table.items():
+        if pattern in jname:
+            return val
+    return None
+
 
 def _analytical_pd_gains(jname, mult=1.0, kd_mult=1.0):
     """Drive-domain gains: kp_drive = mult × k_isaac / M_eff (1/s²),
@@ -86,10 +122,22 @@ def _analytical_pd_gains(jname, mult=1.0, kd_mult=1.0):
     return mult * kp, kd_mult * mult * kd
 
 
-def _scaled_pd_gains(jname):
-    """Return PD gains scaled for eACCELERATION drive type.
+def _scaled_pd_gains(jname, drive_type="ACCELERATION"):
+    """Return PD gains for the given drive type.
 
-    kp → kp × group_scale, kd → 2ζ√(scaled_kp) with per-group ζ."""
+    FORCE: raw Isaac torque-domain gains (kp N·m/rad, kd N·m/(rad/s)) —
+    exactly Isaac Sim's articulation drive semantics (torque PD, clamped
+    by the actuator forceLimit).  This is the faithful release-weight
+    config; the eACCELERATION modes below approximate it via q̈ targets.
+
+    ACCELERATION: kp → kp × group_scale, kd → 2ζ√(scaled_kp) per-group ζ,
+    or the ANALYTICAL (kp/M_eff) mode when SONIC_PHYSX_DRIVE_ANALYTICAL=1,
+    or RAW (Isaac inertia-normalization hypothesis q̈ = kp×ε + kd×ε̇) when
+    SONIC_PHYSX_DRIVE_RAW=1."""
+    if drive_type == "FORCE":
+        return _isaac_pd_gains(jname)
+    if os.environ.get("SONIC_PHYSX_DRIVE_RAW"):
+        return _isaac_pd_gains(jname)
     if os.environ.get("SONIC_PHYSX_DRIVE_ANALYTICAL"):
         mult = float(os.environ.get("SONIC_PHYSX_DRIVE_MULT", "1.0"))
         kd_mult = float(os.environ.get("SONIC_PHYSX_DRIVE_KD_MULT", "1.0"))
@@ -181,7 +229,7 @@ def load_g1(px, xml_path, pos_iters=8, vel_iters=1, drive_type="ACCELERATION"):
                 motor_order.append(jname)
                 motor_joints[jname] = motor
 
-    parser = _MJCFParser(px, motor_joints, motor_order)
+    parser = _MJCFParser(px, motor_joints, motor_order, drive_type=drive_type)
     pelvis = worldbody.find("body")
     if pelvis is None:
         raise ValueError("No root <body> in <worldbody>")
@@ -222,6 +270,28 @@ def load_g1(px, xml_path, pos_iters=8, vel_iters=1, drive_type="ACCELERATION"):
         local_poses=True,
     )
 
+    # Isaac alignment (batch 3): armature + velocity limits + depenetration.
+    # Default ON (these are Isaac values); env-var kill switches for ablation.
+    jnames = [j["name"] for j in parser.joints]
+    if os.environ.get("SONIC_PHYSX_ARMATURE", "1") != "0":
+        armatures = []
+        for n in jnames:
+            v = _lookup_joint_table(_ISAAC_ARMATURE, n)
+            if v is None:
+                raise ValueError(f"No Isaac armature entry for joint {n}")
+            armatures.append(v)
+        art.set_joint_armatures(np.array(armatures, dtype=np.float32))
+    if os.environ.get("SONIC_PHYSX_VEL_LIMIT", "1") != "0":
+        vlims = []
+        for n in jnames:
+            v = _lookup_joint_table(_ISAAC_VEL_LIMIT, n)
+            if v is None:
+                raise ValueError(f"No Isaac velocity limit entry for joint {n}")
+            vlims.append(v)
+        art.set_joint_velocity_limits(np.array(vlims, dtype=np.float32))
+    if os.environ.get("SONIC_PHYSX_DEPEN", "1") != "0":
+        art.set_max_depenetration_velocity(1.0)
+
     # setParentPose fix DISABLED: it improves PhysX FK (getGlobalPose) from
     # 0.82m → 0.06m but breaks physics stability (NaN at step 11 vs 30-step
     # stable without).  createLink(world_poses) naturally computes parentPose =
@@ -241,10 +311,11 @@ class _MJCFParser:
     """Incremental MJCF body/joint parser.  Builds up lists of links, joints,
     and shapes for passing to Articulation.finalize()."""
 
-    def __init__(self, px, motor_joints, motor_order):
+    def __init__(self, px, motor_joints, motor_order, drive_type="ACCELERATION"):
         self.px = px
         self.motor_joints = motor_joints
         self.motor_order = motor_order
+        self.drive_type = drive_type
         self.links = []
         self.joints = []
         self.shapes = []
@@ -357,7 +428,7 @@ class _MJCFParser:
             # actuatorfrcrange on the joint is the source of truth
             pass
 
-        kp, kd = _scaled_pd_gains(jname)
+        kp, kd = _scaled_pd_gains(jname, drive_type=self.drive_type)
 
         # Joint connects parent_idx → child_idx
         art.add_joint(parent_idx, child_idx, axis_enum,

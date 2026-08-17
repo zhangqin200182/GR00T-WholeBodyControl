@@ -218,6 +218,13 @@ struct Articulation {
                                 const std::string& drive_type_str);
     void set_solver_iterations(int pi, int vi);
 
+    // Isaac alignment (batch 3): per-joint armature (reflected rotor inertia,
+    // added to joint-space inertia) and per-axis max joint velocity (Isaac
+    // velocity_limit_sim), plus per-link depenetration clamp (Isaac = 1.0).
+    void set_joint_armatures(py::array_t<float> armatures);
+    void set_joint_velocity_limits(py::array_t<float> vlims);
+    void set_max_depenetration_velocity(float v);
+
     // Joint frame correction (T3: fix parentPose/childPose after createLink)
     void set_joint_parent_pose(int joint_idx, py::array_t<float> pos, py::array_t<float> quat);
     void set_joint_child_pose(int joint_idx, py::array_t<float> pos, py::array_t<float> quat);
@@ -482,6 +489,22 @@ void Articulation::set_solver_iterations(int pi, int vi) {
     if(!ptr) throw std::runtime_error("not finalized");
     ptr->setSolverIterationCounts((PxU32)pi, (PxU32)vi);
 }
+void Articulation::set_joint_armatures(py::array_t<float> armatures) {
+    if(!ptr) throw std::runtime_error("not finalized");
+    auto b=armatures.unchecked<1>(); int n=(int)joints.size();
+    if(b.shape(0)!=n) throw std::runtime_error("armatures length mismatch");
+    for(int i=0;i<n;i++) joints[i]->setArmature(joint_axes[i], b(i));
+}
+void Articulation::set_joint_velocity_limits(py::array_t<float> vlims) {
+    if(!ptr) throw std::runtime_error("not finalized");
+    auto b=vlims.unchecked<1>(); int n=(int)joints.size();
+    if(b.shape(0)!=n) throw std::runtime_error("velocity limits length mismatch");
+    for(int i=0;i<n;i++) joints[i]->setMaxJointVelocity(joint_axes[i], b(i));
+}
+void Articulation::set_max_depenetration_velocity(float v) {
+    if(!ptr) throw std::runtime_error("not finalized");
+    for(auto *l : links) l->setMaxDepenetrationVelocity(v);
+}
 void Articulation::set_joint_parent_pose(int joint_idx, py::array_t<float> pos, py::array_t<float> quat) {
     if(!ptr) throw std::runtime_error("not finalized");
     if(joint_idx<0||joint_idx>=(int)joints.size()) throw std::out_of_range("joint index");
@@ -581,6 +604,12 @@ PYBIND11_MODULE(physx_core, m) {
              py::arg("drive_type")="ACCELERATION")
         .def("set_solver_iterations",&Articulation::set_solver_iterations,
              py::arg("pos_iters"),py::arg("vel_iters"))
+        .def("set_joint_armatures",&Articulation::set_joint_armatures,
+             py::arg("armatures"))
+        .def("set_joint_velocity_limits",&Articulation::set_joint_velocity_limits,
+             py::arg("vlims"))
+        .def("set_max_depenetration_velocity",&Articulation::set_max_depenetration_velocity,
+             py::arg("v")=1.0f)
         .def("set_joint_parent_pose",&Articulation::set_joint_parent_pose,
              py::arg("joint_idx"),py::arg("pos"),py::arg("quat"))
         .def("set_joint_child_pose",&Articulation::set_joint_child_pose,

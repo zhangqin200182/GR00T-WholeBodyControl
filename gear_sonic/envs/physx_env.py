@@ -549,6 +549,7 @@ class PhysXEnv:
     # robot body positions via Python FK from actual joint angles.
     # ═══════════════════════════════════════════════════════════════════
     def _check_termination(self):
+        self._term_reason = ""
         if self.skip_termination:
             return False, False
 
@@ -595,6 +596,7 @@ class PhysXEnv:
         if term and self.ep == 0:
             pass  # Debug print removed — use action_trust to bootstrap
 
+        self._term_reason = term_reason
         trunc = (int(self._ref_time * self._ref_fps) >= len(self._ref_dof) - 1
                  or self.ep >= self.max_ep)
         return term, trunc
@@ -658,6 +660,7 @@ class PhysXEnv:
         obs = self._obs()
         reward = self._compute_reward(action)
         terminated, truncated = self._check_termination()
+        term_reason = self._term_reason
         done = terminated or truncated
         self.ep += 1
         terminal_obs = None
@@ -665,8 +668,10 @@ class PhysXEnv:
             terminal_obs = {k: v.copy() for k, v in obs.items()}
             obs = self.reset()
         if self.ignore_terminations:
-            info = {"time_outs": truncated, "terminal_obs": terminal_obs, "_orig_done": done}
+            info = {"time_outs": truncated, "terminal_obs": terminal_obs,
+                    "term_reason": term_reason, "_orig_done": done}
             done = False
         else:
-            info = {"time_outs": truncated, "terminal_obs": terminal_obs}
+            info = {"time_outs": truncated, "terminal_obs": terminal_obs,
+                    "term_reason": term_reason}
         return obs, reward, done, info
