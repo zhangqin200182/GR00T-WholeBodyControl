@@ -55,10 +55,45 @@ def _isaac_pd_gains(jname):
     return (100.0, 5.0)
 
 
+# Per-joint effective inertia M_eff (kg·m²) about the joint axis — subtree
+# inertia in the default pose, computed from the XML inertials (Steiner).
+# Used by the ANALYTICAL drive-gain mode: kp_drive = k_isaac / M_eff gives
+# torque-domain equivalence τ = k_isaac × err through the acceleration drive
+# (τ = M × kp_drive × err).  The legacy ×15000 group scaling was swept on the
+# BROKEN physics (pre foot-contact fix) and is ~4 orders of magnitude stiffer
+# than the analytical values (hip: 1.49e6 vs 110).
+_M_EFF = {
+    "hip_pitch": 0.902, "hip_roll": 0.773, "hip_yaw": 0.033,
+    "knee": 0.112,
+    "ankle_pitch": 0.002, "ankle_roll": 0.001,
+    "waist_yaw": 0.319, "waist_roll": 0.761, "waist_pitch": 0.601,
+    "shoulder_pitch": 0.134, "shoulder_roll": 0.081, "shoulder_yaw": 0.041,
+    "elbow": 0.034,
+    "wrist_roll": 0.001, "wrist_pitch": 0.005, "wrist_yaw": 0.002,
+}
+
+
+def _analytical_pd_gains(jname, mult=1.0, kd_mult=1.0):
+    """Drive-domain gains: kp_drive = mult × k_isaac / M_eff (1/s²),
+    kd_drive = kd_mult × mult × kd_isaac / M_eff (1/s) — torque-domain Isaac
+    semantics through the eACCELERATION drive.  Enabled by
+    SONIC_PHYSX_DRIVE_ANALYTICAL=1; SONIC_PHYSX_DRIVE_MULT sweeps the kp
+    scale, SONIC_PHYSX_DRIVE_KD_MULT sweeps damping independently."""
+    kp, kd = _isaac_pd_gains(jname)
+    for pattern, meff in _M_EFF.items():
+        if pattern in jname:
+            return mult * kp / meff, kd_mult * mult * kd / meff
+    return mult * kp, kd_mult * mult * kd
+
+
 def _scaled_pd_gains(jname):
     """Return PD gains scaled for eACCELERATION drive type.
 
     kp → kp × group_scale, kd → 2ζ√(scaled_kp) with per-group ζ."""
+    if os.environ.get("SONIC_PHYSX_DRIVE_ANALYTICAL"):
+        mult = float(os.environ.get("SONIC_PHYSX_DRIVE_MULT", "1.0"))
+        kd_mult = float(os.environ.get("SONIC_PHYSX_DRIVE_KD_MULT", "1.0"))
+        return _analytical_pd_gains(jname, mult, kd_mult)
     kp, _kd = _isaac_pd_gains(jname)
     for pattern, scale in _ACCEL_KP_SCALE.items():
         if pattern in jname:

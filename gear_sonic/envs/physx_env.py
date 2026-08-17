@@ -115,6 +115,29 @@ class PhysXEnv:
         self.height_hinge_weight = getattr(config, "height_hinge_weight", 0.0) if config else 0.0
         self.ankle_hinge_weight = getattr(config, "ankle_hinge_weight", 0.0) if config else 0.0
         self.ankle_vel_penalty_weight = getattr(config, "ankle_vel_penalty_weight", 0.0) if config else 0.0
+        # Isaac action space (opt-in): target = act_offset + act_scale * action.
+        # Per-joint table extracted from the deployment stack
+        # (gear_sonic_deploy/.../policy_parameters.hpp), cross-checked against
+        # the Isaac CFG and the E3 table — see
+        # docs/physx-deploy-parameter-table.md.  Legacy space (jm + jh*a)
+        # distorts the action semantics 0.6x-21.7x per joint.
+        self.isaac_action_space = getattr(config, "isaac_action_space", False) if config else False
+        _ISAAC_ACT_SCALE = np.array([
+            0.3506, 0.3506, 0.5475, 0.3506, 0.4386, 0.4386,   # left leg
+            0.3506, 0.3506, 0.5475, 0.3506, 0.4386, 0.4386,   # right leg
+            0.5475, 0.4386, 0.4386,                            # waist
+            0.4386, 0.4386, 0.4386, 0.4386, 0.4386, 0.0745, 0.0745,  # left arm
+            0.4386, 0.4386, 0.4386, 0.4386, 0.4386, 0.0745, 0.0745,  # right arm
+        ], dtype=np.float64)
+        _ISAAC_ACT_OFFSET = np.array([
+            -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,   # left leg
+            -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,   # right leg
+            0.0, 0.0, 0.0,                           # waist
+            0.2, 0.2, 0.0, 0.6, 0.0, 0.0, 0.0,      # left arm
+            0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0,     # right arm
+        ], dtype=np.float64)
+        self._act_scale = _ISAAC_ACT_SCALE
+        self._act_offset = _ISAAC_ACT_OFFSET
 
         # ── Motions ──
         self.motions = self._load_motions(pkl_dir)
@@ -257,7 +280,10 @@ class PhysXEnv:
     # Physics
     # ═══════════════════════════════════════════════════════════════════
     def _pd_control(self, action):
-        target = action * self.jh + self.jm
+        if self.isaac_action_space:
+            target = action * self._act_scale + self._act_offset
+        else:
+            target = action * self.jh + self.jm
         self.art.set_joint_drive_targets(target.astype(np.float32))
 
     def _physics_step(self):
@@ -283,11 +309,18 @@ class PhysXEnv:
     # ═══════════════════════════════════════════════════════════════════
     # Observations
     # ═══════════════════════════════════════════════════════════════════
+    def _ref_action(self):
+        """Reference action in the ACTIVE action space."""
+        q = self.get_current_ref_qpos()
+        if self.isaac_action_space:
+            return (q - self._act_offset) / self._act_scale
+        return (q - self.jm) / self.jh
+
     def _obs(self):
         return {"actor_obs": self._compute_actor_obs(),
                 "critic_obs": self._compute_critic_obs(),
                 "tokenizer": self._build_tokenizer(),
-                "ref_action": (self.get_current_ref_qpos() - self.jm) / self.jh}
+                "ref_action": self._ref_action()}
 
     def _compute_actor_obs(self):
         root_quat = self.art.get_root_world_pose()[1]
@@ -596,7 +629,7 @@ class PhysXEnv:
         # NaN guard: 0.0 * NaN = NaN in IEEE 754 — model NaNs would leak
         # through PD targets → physics → observations → all envs.
         if self.action_trust < 1.0:
-            ref_action = (self.get_current_ref_qpos() - self.jm) / self.jh
+            ref_action = self._ref_action()
             if not np.isfinite(action).all():
                 action = ref_action.copy()
             else:

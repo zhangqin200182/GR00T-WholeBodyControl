@@ -100,6 +100,8 @@ def main():
                              "evals sample identical motion clips")
     parser.add_argument("--trust", type=float, default=1.0,
                         help="Action trust: 0.0 = pure ref PD baseline, 1.0 = policy")
+    parser.add_argument("--isaac-space", action="store_true",
+                        help="Use the Isaac action space (target = offset + scale * action)")
     args = parser.parse_args()
 
     from omegaconf import OmegaConf
@@ -117,6 +119,7 @@ def main():
                        "ank_pos_thresh": args.ank,
                        "ank_h_mult": args.ank_h,
                        "action_trust": args.trust,
+                       "isaac_action_space": args.isaac_space,
                        "ignore_terminations": False,
                        "skip_termination": False,
                        "max_episode_length": args.max_steps,
