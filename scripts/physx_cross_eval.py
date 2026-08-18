@@ -103,6 +103,12 @@ def main():
                         help="Action trust: 0.0 = pure ref PD baseline, 1.0 = policy")
     parser.add_argument("--isaac-space", action="store_true",
                         help="Use the Isaac action space (target = offset + scale * action)")
+    parser.add_argument("--pkl", default="/sample_data/robot_filtered",
+                        help="Motion PKL directory (recursive glob)")
+    parser.add_argument("--sequential", action="store_true",
+                        help="Fixed pairing: episode i uses clip i in loader order "
+                             "(no shuffle, no random sampling) — for cross-engine "
+                             "per-episode comparison")
     parser.add_argument("--drive-type", default="ACCELERATION",
                         choices=["ACCELERATION", "FORCE"],
                         help="Articulation drive mode: FORCE = Isaac torque-domain "
@@ -123,7 +129,7 @@ def main():
 
     np.random.seed(args.seed)
     from gear_sonic.envs.physx_env import PhysXEnv
-    env = PhysXEnv(physx_core, XML, PKL,
+    env = PhysXEnv(physx_core, XML, args.pkl,
                    config=OmegaConf.create({
                        "alive_bonus": 0.0,
                        "ori_thresh": args.ori,
@@ -139,12 +145,20 @@ def main():
                    pos_iters=8, vel_iters=args.vel_iters,
                    static_pose=False, root_z_offset=0.04, standing_prob=0.0,
                    drive_type=args.drive_type)
-    # Deterministic reshuffle (loader itself now uses a fixed seed). Permute
-    # the motion-id list alongside so per-episode clip attribution stays aligned.
-    order = np.random.RandomState(args.motion_seed).permutation(len(env.motions))
-    env.motions = [env.motions[i] for i in order]
-    if getattr(env, "_motion_ids", None):
-        env._motion_ids = [env._motion_ids[i] for i in order]
+    if args.sequential:
+        # Fixed pairing: keep loader order (loader shuffle is fixed-seed),
+        # print the episode<->clip map for cross-engine reproducibility.
+        print("Sequential clip order:", flush=True)
+        for i, cid in enumerate(getattr(env, "_motion_ids", [])):
+            print(f"  ep{i} <- {cid}", flush=True)
+    else:
+        # Deterministic reshuffle (loader itself now uses a fixed seed).
+        # Permute the motion-id list alongside so per-episode clip
+        # attribution stays aligned.
+        order = np.random.RandomState(args.motion_seed).permutation(len(env.motions))
+        env.motions = [env.motions[i] for i in order]
+        if getattr(env, "_motion_ids", None):
+            env._motion_ids = [env._motion_ids[i] for i in order]
 
     print(f"Eval @ ori={args.ori}, ank_pos={args.ank}, ank_h={args.ank_h}, "
           f"episodes={args.episodes}", flush=True)
@@ -152,6 +166,8 @@ def main():
     lengths, rewards, reasons = [], [], []
     with torch.no_grad():
         for ep in range(args.episodes):
+            if args.sequential:
+                env._forced_idx = ep
             obs = env.reset()
             total = 0.0
             reason = "survived"

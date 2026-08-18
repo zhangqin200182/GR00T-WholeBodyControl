@@ -102,8 +102,8 @@ class MuJoCoEnv:
     # Motion loading
     # ═══════════════════════════════════════════════════════════════════
     def _load_motions(self, pkl_dir):
-        pkls = [p for p in glob.glob(os.path.join(pkl_dir, "**/*.pkl"), recursive=True)
-                if not os.path.basename(p).startswith("._")]
+        pkls = sorted([p for p in glob.glob(os.path.join(pkl_dir, "**/*.pkl"), recursive=True)
+                       if not os.path.basename(p).startswith("._")])
         if not pkls: raise RuntimeError(f"No motion PKLs in {pkl_dir}")
         # Fixed seed: the PID-based shuffle made cross-process motion order a
         # coin flip, which with a small clip set produced bimodal eval results

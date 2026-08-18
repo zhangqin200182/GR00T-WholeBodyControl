@@ -166,8 +166,8 @@ class PhysXEnv:
     # Motion loading (identical to MuJoCoEnv)
     # ═══════════════════════════════════════════════════════════════════
     def _load_motions(self, pkl_dir):
-        pkls = [p for p in glob.glob(os.path.join(pkl_dir, "**/*.pkl"), recursive=True)
-                if not os.path.basename(p).startswith("._")]
+        pkls = sorted([p for p in glob.glob(os.path.join(pkl_dir, "**/*.pkl"), recursive=True)
+                       if not os.path.basename(p).startswith("._")])
         if not pkls: raise RuntimeError(f"No motion PKLs in {pkl_dir}")
         # Fixed seed: the old PID-based shuffle made cross-process motion order
         # a coin flip, which with a small clip set produced bimodal eval
@@ -189,7 +189,11 @@ class PhysXEnv:
         return motions
 
     def _sample_motion(self):
-        idx = np.random.randint(len(self.motions))
+        # _forced_idx (set by eval scripts for sequential clip pairing)
+        # overrides the random draw; defaults to random sampling otherwise.
+        forced = getattr(self, "_forced_idx", None)
+        idx = (forced % len(self.motions)) if forced is not None \
+            else np.random.randint(len(self.motions))
         m = self.motions[idx]
         self._cur_motion_id = (self._motion_ids[idx] if getattr(self, "_motion_ids", None)
                                else "?")
