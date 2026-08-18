@@ -105,9 +105,10 @@ class MuJoCoEnv:
         pkls = [p for p in glob.glob(os.path.join(pkl_dir, "**/*.pkl"), recursive=True)
                 if not os.path.basename(p).startswith("._")]
         if not pkls: raise RuntimeError(f"No motion PKLs in {pkl_dir}")
-        # Each env gets a different random slice of PKL files, avoiding
-        # every env sampling the same alphabetically-first subset.
-        rng = np.random.RandomState(os.getpid() + id(self) % 100000)
+        # Fixed seed: the PID-based shuffle made cross-process motion order a
+        # coin flip, which with a small clip set produced bimodal eval results
+        # (2026-08-17, see physx-eval-two-clip-bimodal memory).
+        rng = np.random.RandomState(0)
         rng.shuffle(pkls)
         max_motions = 500
         motions = []

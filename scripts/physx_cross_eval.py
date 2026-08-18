@@ -139,9 +139,12 @@ def main():
                    pos_iters=8, vel_iters=args.vel_iters,
                    static_pose=False, root_z_offset=0.04, standing_prob=0.0,
                    drive_type=args.drive_type)
-    # _load_motions shuffles with PID-dependent seed; reshuffle deterministically
-    # so all eval processes sample identical clips in identical order
-    env.motions = list(np.random.RandomState(args.motion_seed).permutation(env.motions))
+    # Deterministic reshuffle (loader itself now uses a fixed seed). Permute
+    # the motion-id list alongside so per-episode clip attribution stays aligned.
+    order = np.random.RandomState(args.motion_seed).permutation(len(env.motions))
+    env.motions = [env.motions[i] for i in order]
+    if getattr(env, "_motion_ids", None):
+        env._motion_ids = [env._motion_ids[i] for i in order]
 
     print(f"Eval @ ori={args.ori}, ank_pos={args.ank}, ank_h={args.ank_h}, "
           f"episodes={args.episodes}", flush=True)
@@ -164,7 +167,8 @@ def main():
             lengths.append(s + 1)
             rewards.append(total)
             reasons.append(reason)
-            print(f"  ep{ep}: survived={s + 1}, reward={total:.1f}, reason={reason}",
+            print(f"  ep{ep}: survived={s + 1}, reward={total:.1f}, reason={reason}, "
+                  f"clip={getattr(env, '_cur_motion_id', '?')}",
                   flush=True)
 
     lengths = np.array(lengths)

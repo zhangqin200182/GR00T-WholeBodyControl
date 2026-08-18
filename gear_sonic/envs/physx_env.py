@@ -169,23 +169,30 @@ class PhysXEnv:
         pkls = [p for p in glob.glob(os.path.join(pkl_dir, "**/*.pkl"), recursive=True)
                 if not os.path.basename(p).startswith("._")]
         if not pkls: raise RuntimeError(f"No motion PKLs in {pkl_dir}")
-        rng = np.random.RandomState(os.getpid() + id(self) % 100000)
+        # Fixed seed: the old PID-based shuffle made cross-process motion order
+        # a coin flip, which with a small clip set produced bimodal eval
+        # results (2026-08-17, see physx-eval-two-clip-bimodal memory).
+        rng = np.random.RandomState(0)
         rng.shuffle(pkls)
-        motions = []
+        motions, motion_ids = [], []
         for p in pkls:
             v = joblib.load(p)
             if isinstance(v, dict):
                 if "dof" in v:
-                    motions.append(v); continue
+                    motions.append(v); motion_ids.append(os.path.basename(p)); continue
                 for key in v:
                     if isinstance(v[key], dict) and "dof" in v[key]:
-                        motions.append(v[key]); break
+                        motions.append(v[key]); motion_ids.append(os.path.basename(p)); break
             if len(motions) >= 500: break
         if not motions: raise RuntimeError(f"No motion PKLs in {pkl_dir}")
+        self._motion_ids = motion_ids
         return motions
 
     def _sample_motion(self):
-        m = self.motions[np.random.randint(len(self.motions))]
+        idx = np.random.randint(len(self.motions))
+        m = self.motions[idx]
+        self._cur_motion_id = (self._motion_ids[idx] if getattr(self, "_motion_ids", None)
+                               else "?")
         dof = m["dof"]; n = len(dof)
         self._ref_dof = dof
         self._ref_root_rot = m["root_rot"].astype(np.float64)
