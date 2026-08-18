@@ -215,6 +215,9 @@ struct Articulation {
     py::array_t<float> get_joint_forces();
     void set_joint_forces(py::array_t<float> forces);
     void zero_joint_forces();
+    // P1-style locked-state experiments: re-pinned root + locked joints let
+    // the solver sleep the articulation, zeroing drive forces. Wake it.
+    void wake_up() { if(ptr) ptr->wakeUp(); }
     std::pair<py::array_t<float>,py::array_t<float>> get_root_world_pose();
     std::pair<py::array_t<float>,py::array_t<float>> get_root_world_velocity();
     std::pair<py::array_t<float>,py::array_t<float>> get_link_world_pose(int idx);
@@ -632,6 +635,7 @@ PYBIND11_MODULE(physx_core, m) {
         .def("get_joint_forces",&Articulation::get_joint_forces)
         .def("set_joint_forces",&Articulation::set_joint_forces,py::arg("forces"))
         .def("zero_joint_forces",&Articulation::zero_joint_forces)
+        .def("wake_up",&Articulation::wake_up)
         .def("get_root_world_pose",&Articulation::get_root_world_pose)
         .def("get_root_world_velocity",&Articulation::get_root_world_velocity)
         .def("get_link_world_pose",&Articulation::get_link_world_pose,py::arg("idx"))
