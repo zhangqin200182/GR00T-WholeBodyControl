@@ -312,6 +312,10 @@ void Articulation::set_joint_forces(py::array_t<float> forces) {
     auto *c = get_cache();
     auto buf = forces.unchecked<1>();
     int n = (int)buf.shape(0);
+    if(n != (int)ptr->getDofs())
+        throw std::runtime_error("set_joint_forces: length " +
+                                 std::to_string(n) + " != dofs " +
+                                 std::to_string(ptr->getDofs()));
     for(int i=0;i<n;i++) c->jointForce[i] = buf(i);
     ptr->applyCache(*c, PxArticulationCacheFlag::eFORCE);
 }
