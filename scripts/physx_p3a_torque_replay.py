@@ -40,17 +40,14 @@ def xml_to_internal(j):
     return int(np.where(ISAAC_REORDER == j)[0][0])
 
 
-# P1-fitted torque-domain gains (Isaac runtime, 08-18). The recorded
-# applied_torque field does NOT carry the gravity-supporting component, so
-# the injected torque is reconstructed from the fitted drive model instead:
-# tau = kp*(target-q) - kd*qdot, using THEIR recorded target/qpos/qvel.
-# hip kd not yet dumped by the colleague — CFG fallback (damping is a
-# second-order term over the 100ms torque-dominated window).
-FIT_GAINS = {"left_hip_pitch": (143.3, 6.3),
-             "left_knee": (445.0, 24.7),
-             "left_ankle_pitch": (765.0, 44.5)}
+# The applied_torque field IS the raw drive torque (colleague-local
+# verification 08-19: kp*e and -kd*qdot cancel during the transient, net
+# peak 2.85 matches the field; knee peak 9.91 matches the QA value
+# verbatim).  Inject the field directly — no reconstruction.
 DT = 0.005
-WINDOW = 20  # substeps = 100 ms torque-dominated phase
+WINDOW = 6  # substeps = 30 ms — inside the torque-dominated phase
+# (their field swings sign ~40 ms in via the -kd*qdot phase; a longer
+# window mixes the positive and negative torque phases)
 
 
 def replay_group(art, scene, j, q0_their, tau_their, root_z):
@@ -118,23 +115,29 @@ def main():
         art.set_joint_drive_params(i, 0.0, 0.0, 100.0, "FORCE")
 
     for jname, j in JOINT_IDX.items():
-        kp, kd = FIT_GAINS[jname]
         for f in sorted(glob.glob(os.path.join(args.isaac_p1, f"p1_{jname}_step_*.npz"))):
             d = np.load(f)
             q0 = float(d["q0"])
-            # reconstructed drive torque from THEIR fitted model + THEIR
-            # recorded trajectory (includes the gravity-support component)
-            tau = kp * (d["target"] - d["qpos"]) - kd * d["qvel"]
-            ours_q = replay_group(art, scene, j, q0, tau, 1.05)
-            # early-phase delta-q ratio: ours / isaac over the first WINDOW
-            dq_o = ours_q[WINDOW] - ours_q[0]
+            tau = d["applied_torque"]  # raw drive torque (CFG gains, net of
+            # gravity balance — steady-state value is zero)
+            ours_q = replay_group(art, scene, j, q0, tau, 1.3)
+            # gravity baseline: same replay with ZERO torque — the difference
+            # isolates the injected-torque response from our plant's gravity
+            # sag (their steady state is e=0 -> their sag is ~0, so their
+            # recorded dq is already net; our sag is a separate measurement —
+            # itself a plant-geometry signal)
+            zero_q = replay_group(art, scene, j, q0, np.zeros(len(tau)), 1.3)
+            dq_field = ours_q[WINDOW] - ours_q[0]
+            dq_zero = zero_q[WINDOW] - zero_q[0]
+            dq_net = dq_field - dq_zero
             dq_i = d["qpos"][WINDOW] - d["qpos"][0]
-            ratio = dq_o / dq_i if abs(dq_i) > 1e-9 else np.nan
+            ratio = dq_net / dq_i if abs(dq_i) > 1e-9 else np.nan
             tag = os.path.basename(f)
             np.savez(os.path.join(args.out, tag.replace(".npz", "_ours.npz")),
-                     q=ours_q, tau=tau[:len(ours_q)])
-            print(f"{tag}: dq_ours={dq_o:+.5f} dq_isaac={dq_i:+.5f} "
-                  f"ratio={ratio:.3f}", flush=True)
+                     q=ours_q, q_zero=zero_q, tau=tau[:len(ours_q)])
+            print(f"{tag}: dq_field={dq_field:+.5f} dq_zero={dq_zero:+.5f} "
+                  f"dq_net={dq_net:+.5f} dq_isaac={dq_i:+.5f} "
+                  f"ratio_net={ratio:.3f}", flush=True)
     print("P3A REPLAY COMPLETE")
 
 
