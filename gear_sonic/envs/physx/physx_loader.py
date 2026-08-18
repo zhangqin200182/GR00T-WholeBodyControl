@@ -24,6 +24,19 @@ _ISAAC_PD = {
     "wrist_roll": (14.3, 0.9), "wrist_pitch": (16.8, 1.1), "wrist_yaw": (16.8, 1.1),
 }
 
+# P1-measured RUNTIME gains (torque domain, from the Isaac-side single-joint
+# drive-response fits, 2026-08-18).  The colleague's runtime values differ
+# from the CFG formula (kp = armature·ω²) — the formula understates ankle kp
+# by 27× and knee by 4.5×.  With SONIC_PHYSX_DRIVE_ANALYTICAL=1 and
+# MULT=1/KD_MULT=1 the drive reproduces these exact torque-domain gains.
+# hip_pitch kd pending the colleague's 29-joint runtime dump (falls back to
+# the CFG value).
+_ISAAC_PD_MEASURED = {
+    "knee": (445.0, 24.7),
+    "hip_pitch": (143.3, None),
+    "ankle_pitch": (765.0, 44.5),
+}
+
 
 # eACCELERATION kp scaling by joint group.
 # Isaac base kp (14-99) is too small for raw PhysX 5 eACCELERATION because
@@ -49,6 +62,13 @@ _DAMPING_ZETA = {
 def _isaac_pd_gains(jname):
     """Return Isaac Sim base PD gains (kp in Nm/rad, kd in Nm/(rad/s)) —
     BEFORE eACCELERATION scaling."""
+    if os.environ.get("SONIC_PHYSX_PD_MEASURED"):
+        for pattern, gains in _ISAAC_PD_MEASURED.items():
+            if pattern in jname:
+                kp, kd = gains
+                if kd is None:
+                    kd = _ISAAC_PD.get(pattern, (0.0, 0.0))[1]
+                return (kp, kd)
     for pattern, gains in _ISAAC_PD.items():
         if pattern in jname:
             return gains
