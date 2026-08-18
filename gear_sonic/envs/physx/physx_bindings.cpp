@@ -99,6 +99,7 @@ struct DebugContact {
     PxVec3 pa, pb;        // world positions of the two actors
     const void *actA, *actB;
     float sep;            // contact point separation
+    PxVec3 impulse;       // world-space contact impulse (force = impulse / dt)
 };
 static std::vector<DebugContact> g_debug_contacts;
 static std::mutex g_debug_mutex;  // std::mutex: PxMutex needs the foundation, which isn't up yet at static-init
@@ -120,7 +121,8 @@ struct DebugCallback : PxSimulationEventCallback {
                 g_debug_mutex.lock();
                 g_debug_contacts.push_back({a0->getGlobalPose().p,
                                             a1->getGlobalPose().p,
-                                            h.actors[0], h.actors[1], pts[j].separation});
+                                            h.actors[0], h.actors[1], pts[j].separation,
+                                            pts[j].impulse});
                 g_debug_mutex.unlock();
             }
         }
@@ -155,7 +157,8 @@ struct Scene {
         g_debug_mutex.lock();
         for(auto &c : g_debug_contacts)
             out.append(py::make_tuple(c.pa.x, c.pa.y, c.pa.z, c.pb.x, c.pb.y, c.pb.z,
-                                      (py::ssize_t)c.actA, (py::ssize_t)c.actB, c.sep));
+                                      (py::ssize_t)c.actA, (py::ssize_t)c.actB, c.sep,
+                                      c.impulse.x, c.impulse.y, c.impulse.z));
         g_debug_mutex.unlock();
         return out;
     }
@@ -180,6 +183,11 @@ struct Articulation {
     std::map<std::string,int>  name_to_idx;
     struct DriveCfg { float kp,kd,force; };
     std::vector<DriveCfg> drive_cfgs;
+    PxArticulationCache *cache = nullptr;   // lazily created after finalize
+    PxArticulationCache* get_cache() {
+        if(!cache) cache = ptr->createCache();
+        return cache;
+    }
 
     ~Articulation();
     Articulation(const Articulation&)=delete; Articulation& operator=(const Articulation&)=delete;
@@ -201,6 +209,12 @@ struct Articulation {
     // State
     py::array_t<float> get_joint_positions();
     py::array_t<float> get_joint_velocities();
+    // Joint-space generalized forces (cache eFORCE). Read = total joint
+    // force from the last solver step; write = persistent applied force,
+    // re-applied each frame until changed (torque-injection mode).
+    py::array_t<float> get_joint_forces();
+    void set_joint_forces(py::array_t<float> forces);
+    void zero_joint_forces();
     std::pair<py::array_t<float>,py::array_t<float>> get_root_world_pose();
     std::pair<py::array_t<float>,py::array_t<float>> get_root_world_velocity();
     std::pair<py::array_t<float>,py::array_t<float>> get_link_world_pose(int idx);
@@ -277,10 +291,36 @@ void Scene::add_articulation(Articulation *art) {
 // Articulation impl
 // ═══════════════════════════════════════════════════════════════════════
 Articulation::~Articulation() {
+    if(cache) { cache->release(); cache=nullptr; }
     // If owned by a scene, the scene releases the PhysX object.
     // Otherwise release it directly.
     if(ptr && !scene_ptr) { ptr->release(); }
     ptr=nullptr;
+}
+
+py::array_t<float> Articulation::get_joint_forces() {
+    auto *c = get_cache();
+    ptr->copyInternalStateToCache(*c, PxArticulationCacheFlag::eFORCE);
+    int n = (int)ptr->getDofs();
+    py::array_t<float> out(n);
+    auto buf = out.mutable_unchecked<1>();
+    for(int i=0;i<n;i++) buf(i) = (float)c->jointForce[i];
+    return out;
+}
+
+void Articulation::set_joint_forces(py::array_t<float> forces) {
+    auto *c = get_cache();
+    auto buf = forces.unchecked<1>();
+    int n = (int)buf.shape(0);
+    for(int i=0;i<n;i++) c->jointForce[i] = buf(i);
+    ptr->applyCache(*c, PxArticulationCacheFlag::eFORCE);
+}
+
+void Articulation::zero_joint_forces() {
+    auto *c = get_cache();
+    int n = (int)ptr->getDofs();
+    for(int i=0;i<n;i++) c->jointForce[i] = 0.f;
+    ptr->applyCache(*c, PxArticulationCacheFlag::eFORCE);
 }
 
 int Articulation::add_link(int parent_idx, const std::string &name) {
@@ -585,6 +625,9 @@ PYBIND11_MODULE(physx_core, m) {
              py::arg("local_poses")=false)
         .def("get_joint_positions",&Articulation::get_joint_positions)
         .def("get_joint_velocities",&Articulation::get_joint_velocities)
+        .def("get_joint_forces",&Articulation::get_joint_forces)
+        .def("set_joint_forces",&Articulation::set_joint_forces,py::arg("forces"))
+        .def("zero_joint_forces",&Articulation::zero_joint_forces)
         .def("get_root_world_pose",&Articulation::get_root_world_pose)
         .def("get_root_world_velocity",&Articulation::get_root_world_velocity)
         .def("get_link_world_pose",&Articulation::get_link_world_pose,py::arg("idx"))

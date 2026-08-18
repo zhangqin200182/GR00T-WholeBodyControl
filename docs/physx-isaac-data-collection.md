@@ -46,9 +46,9 @@
 
 | 使用方式 | 回答的问题 |
 |---------|-----------|
-| ① 基准裁决 | release 在 Isaac 走多少步（**我们后验套 0.35/0.35/1.5 计算**，见 §5 终止协议）？若 ≈PD 且几十步 → release 本身弱，**我们环境可能已对齐**，主线转回训练侧；若数百步 → 环境 gap 实锤，gap 大小 = Isaac 步数 / 31.83 |
+| ① 基准裁决 | release 在 Isaac 走多少步（**我们后验套 0.35/0.35/1.5 计算**，见 §5 终止协议）？若 ≈PD 且几十步 → release 本身弱，**我们环境可能已对齐**，主线转回训练侧；若数百步 → 环境 gap 实锤。**gap 按固定 12 片段逐集并排**：聚合比率 = Isaac 步数 / **25.67**（我们侧固定 12 基线，附录 B；不要用 500 片段抽样的 31.83 做分母——两者片段集不同，混用正是双峰危机的教训）|
 | ② 轨迹级 diff | 同片段逐帧对比 qpos/qvel → **首个发散关节与发散相位**（支撑相？摆动相？接触瞬间？）→ 把"gap 在引擎动力学"从假设变成逐关节定位 |
-| **③a 扭矩重放（纯植物 gap）** | 把 Isaac 记录的 `applied_torque` 注入我们环境的**力矩模式（绕过我们的驱动）**→ 对比下一步 q̈/qvel → 纯植物动力学逐关节误差图。驱动语义不参与，是最干净的 gap 定位 |
+| **③a 扭矩重放（纯植物 gap）** | 把 Isaac 记录的 `applied_torque` 注入我们环境的**力矩模式（绕过我们的驱动）**→ 对比下一步 q̈/qvel → 纯植物动力学逐关节误差图。驱动语义不参与，是最干净的 gap 定位。**已知近似**：Isaac 的 applied_torque 是控制步采样，但其驱动在每个物理子步内随 (q,qd) 演化力矩；我们重放只能零阶保持（10 个子步内恒力矩），q̈ 对比会混入"子步内力矩演化"的差异——实现时写入我们侧 protocol_notes，不阻塞数据收集 |
 | **③b 目标重放（驱动语义 gap）** | 注入相同 (qpos, qvel, joint_target) → 对比两引擎各自算出的力矩 → 驱动语义差距（analytical mult=10 与 Isaac 原生增益本来就该有差，单独隔离）|
 | ④ 驱动响应反解 | 单关节阶跃/正弦响应曲线 → 反解 omni.physx 有效增益与惯性归一化（内部实现不公开，用实测曲线反推）|
 
@@ -147,9 +147,16 @@ python3 /tmp/physx_cross_eval.py --ckpt /root/sonic_release/last.pt \
 
 （`--trust 0.0` = PD 基线。逐集结果表见附录 B。）
 
-### 我们侧轨迹导出（save 模式，已实现）
+### 我们侧轨迹导出（save 模式，已实现，2026-08-18 C++ 增补完成）
 
-`cross_eval --save-dir <dir>` 按本协议同规格导出每集 npz（ctrl_step/root_pos/root_quat/qpos/qvel/ref_qpos/ref_root_pos/ref_root_quat/action_raw/joint_target），接触事件另存 `*_contacts.npz`（step/pa/pb/actA/actB/sep），并附 `protocol_notes.txt`（关节序=我们 XML 序、四元数 wxyz、已知缺口声明）。**尚未导出**（数据到货前的 C++ 增补工作项）：`applied_torque`（bindings 缺 `getJointForce`）与接触力（bindings 只捕事件不捕力）。③a 的力矩注入模式（`addJointForce`）同批实现。
+`cross_eval --save-dir <dir>` 按本协议同规格导出每集 npz（ctrl_step/root_pos/root_quat/qpos/qvel/ref_qpos/ref_root_pos/ref_root_quat/action_raw/joint_target/**applied_torque**），接触事件另存 `*_contacts.npz`（step/pa/pb/actA/actB/sep/**imp**，力 = imp/dt），并附 `protocol_notes.txt`（关节序=我们 XML 序、四元数 wxyz、语义声明）。
+
+C++ bindings 增补（已构建验证）：
+- `get_joint_forces()`：读上一求解步的**总广义关节力**（cache eFORCE；含接触反作用在关节空间的投影——与 Isaac 侧 applied_torque 语义可能不同，diff 时先校准语义）
+- `set_joint_forces(tau)` / `zero_joint_forces()`：**力矩注入模式**（持久施加、逐帧重放直到清零；drive 需先归零）——③a 扭矩重放的注入路径已就绪
+- 接触回调增加世界系冲量向量 `impulse`（力 = impulse/dt）
+
+③a 已知近似（实现时写入我们侧 protocol_notes）：Isaac 的 applied_torque 是控制步采样，其驱动在物理子步内随 (q,qd) 演化；我们重放为零阶保持（10 子步恒力矩），q̈ 对比会混入子步内力矩演化差异。
 
 ---
 

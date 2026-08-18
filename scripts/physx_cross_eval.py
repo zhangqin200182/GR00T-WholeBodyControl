@@ -178,11 +178,12 @@ def main():
             f.write("Joint order: our XML order (29 joints, mujoco convention) — "
                     "Isaac-side isaaclab order maps via ISAAC_REORDER.\n")
             f.write("Quaternions: wxyz (PhysX convention).\n")
-            f.write("applied_torque: NOT exported (bindings lack getJointForce — "
-                    "planned C++ addition).\n")
-            f.write("contact_force_*: NOT exported (bindings capture contact "
-                    "events only — points/actors/separation, no forces; planned "
-                    "C++ addition). Per-step contact events in *_contacts.npz.\n")
+            f.write("applied_torque: total joint-space generalized force from the "
+                    "last solver step (cache eFORCE), includes contact reaction "
+                    "projection — semantics may differ from Isaac-side applied "
+                    "torque.\n")
+            f.write("contact events: per-step *_contacts.npz with pa/pb/actA/"
+                    "actB/sep/imp; contact force approx = impulse / dt.\n")
             f.write("action_raw for trust=0.0 (PD runs) is ref-derived: "
                     "(ref_qpos - act_offset)/act_scale.\n")
         print(f"Saving trajectories to {args.save_dir}", flush=True)
@@ -197,7 +198,7 @@ def main():
             reason = "survived"
             rec = {k: [] for k in ["ctrl_step", "root_pos", "root_quat", "qpos",
                                    "qvel", "ref_qpos", "ref_root_pos", "ref_root_quat",
-                                   "action_raw", "joint_target"]}
+                                   "action_raw", "joint_target", "applied_torque"]}
             contacts = []  # (step, pa, pb, actA, actB, sep)
             for s in range(args.max_steps):
                 obs_t = {k: torch.from_numpy(v).float().unsqueeze(0)
@@ -228,6 +229,7 @@ def main():
                     else:
                         rec["action_raw"].append(a.squeeze(0).numpy())
                     rec["joint_target"].append(env._last_joint_target)
+                    rec["applied_torque"].append(env.art.get_joint_forces())
                     for c in env.scene.get_contacts():
                         contacts.append((s,) + c)
                 if done:
@@ -247,7 +249,8 @@ def main():
                             for k, v in rec.items()})
                 if contacts:
                     # contacts entries are flat (step, pa.x, pa.y, pa.z,
-                    # pb.x, pb.y, pb.z, actA, actB, sep)
+                    # pb.x, pb.y, pb.z, actA, actB, sep, imp.x, imp.y, imp.z);
+                    # force = impulse / dt (world-space contact impulse)
                     np.savez(os.path.join(
                         args.save_dir, f"{policy}_{clip}_{ep:02d}_contacts.npz"),
                         step=np.array([c[0] for c in contacts], dtype=np.int32),
@@ -255,7 +258,8 @@ def main():
                         pb=np.array([c[4:7] for c in contacts], dtype=np.float32),
                         actA=np.array([c[7] for c in contacts], dtype=np.int64),
                         actB=np.array([c[8] for c in contacts], dtype=np.int64),
-                        sep=np.array([c[9] for c in contacts], dtype=np.float32))
+                        sep=np.array([c[9] for c in contacts], dtype=np.float32),
+                        imp=np.array([c[10:13] for c in contacts], dtype=np.float32))
 
     lengths = np.array(lengths)
     cats = Counter()
