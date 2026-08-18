@@ -200,6 +200,14 @@ def main():
             if args.sequential:
                 env._forced_idx = ep
             obs = env.reset()
+            if args.save_dir and ep == 0:
+                # actor obs (930,) at episode start — cross-engine obs
+                # structural comparison (obs_step0 diff)
+                policy = "pd" if args.trust == 0.0 else "release"
+                clip = getattr(env, "_cur_motion_id", "unknown").replace(".pkl", "")
+                np.save(os.path.join(args.save_dir,
+                                     f"{policy}_{clip}_obs_step0.npy"),
+                        obs["actor_obs"])
             total = 0.0
             reason = "survived"
             rec = {k: [] for k in ["ctrl_step", "root_pos", "root_quat", "qpos",
