@@ -9,6 +9,10 @@ import argparse, os, sys
 from collections import Counter
 import numpy as np
 
+# Enable debug contact capture (read at physx_core import time) — the
+# --save-dir trajectory export records per-step contact events.
+os.environ.setdefault("PHYSX_CONTACT_DEBUG", "1")
+
 # Must import physx_core before torch (fork+import safety)
 _build_candidates = [
     os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -109,6 +113,11 @@ def main():
                         help="Fixed pairing: episode i uses clip i in loader order "
                              "(no shuffle, no random sampling) — for cross-engine "
                              "per-episode comparison")
+    parser.add_argument("--save-dir", default=None,
+                        help="If set, save per-episode trajectories in the "
+                             "Isaac-comparison field spec (see "
+                             "docs/physx-isaac-data-collection.md); contact "
+                             "events go to a separate per-episode npz")
     parser.add_argument("--drive-type", default="ACCELERATION",
                         choices=["ACCELERATION", "FORCE"],
                         help="Articulation drive mode: FORCE = Isaac torque-domain "
@@ -163,6 +172,21 @@ def main():
     print(f"Eval @ ori={args.ori}, ank_pos={args.ank}, ank_h={args.ank_h}, "
           f"episodes={args.episodes}", flush=True)
 
+    if args.save_dir:
+        os.makedirs(args.save_dir, exist_ok=True)
+        with open(os.path.join(args.save_dir, "protocol_notes.txt"), "w") as f:
+            f.write("Joint order: our XML order (29 joints, mujoco convention) — "
+                    "Isaac-side isaaclab order maps via ISAAC_REORDER.\n")
+            f.write("Quaternions: wxyz (PhysX convention).\n")
+            f.write("applied_torque: NOT exported (bindings lack getJointForce — "
+                    "planned C++ addition).\n")
+            f.write("contact_force_*: NOT exported (bindings capture contact "
+                    "events only — points/actors/separation, no forces; planned "
+                    "C++ addition). Per-step contact events in *_contacts.npz.\n")
+            f.write("action_raw for trust=0.0 (PD runs) is ref-derived: "
+                    "(ref_qpos - act_offset)/act_scale.\n")
+        print(f"Saving trajectories to {args.save_dir}", flush=True)
+
     lengths, rewards, reasons = [], [], []
     with torch.no_grad():
         for ep in range(args.episodes):
@@ -171,12 +195,41 @@ def main():
             obs = env.reset()
             total = 0.0
             reason = "survived"
+            rec = {k: [] for k in ["ctrl_step", "root_pos", "root_quat", "qpos",
+                                   "qvel", "ref_qpos", "ref_root_pos", "ref_root_quat",
+                                   "action_raw", "joint_target"]}
+            contacts = []  # (step, pa, pb, actA, actB, sep)
             for s in range(args.max_steps):
                 obs_t = {k: torch.from_numpy(v).float().unsqueeze(0)
                          for k, v in obs.items()}
                 a = model.act_inference(obs_t, cur_dones=None)
+                if args.save_dir:
+                    env.scene.clear_contacts()
                 obs, r, done, info = env.step(a.squeeze(0).numpy())
                 total += r
+                if args.save_dir:
+                    rpos, rquat = env.art.get_root_world_pose()
+                    ridx = min(int(env._ref_time * env._ref_fps),
+                               len(env._ref_dof) - 1)
+                    rrq = env._ref_root_rot[ridx]  # stored xyzw
+                    rec["ctrl_step"].append(s)
+                    rec["root_pos"].append(rpos)
+                    rec["root_quat"].append(rquat)
+                    rec["qpos"].append(env.art.get_joint_positions())
+                    rec["qvel"].append(env.art.get_joint_velocities())
+                    ref_q = env.get_current_ref_qpos()
+                    rec["ref_qpos"].append(ref_q)
+                    rec["ref_root_pos"].append(env._ref_root_trans[ridx])
+                    rec["ref_root_quat"].append(
+                        np.array([rrq[3], rrq[0], rrq[1], rrq[2]]))
+                    if args.trust == 0.0:
+                        rec["action_raw"].append(
+                            (ref_q - env._act_offset) / env._act_scale)
+                    else:
+                        rec["action_raw"].append(a.squeeze(0).numpy())
+                    rec["joint_target"].append(env._last_joint_target)
+                    for c in env.scene.get_contacts():
+                        contacts.append((s,) + c)
                 if done:
                     reason = info.get("term_reason", "") or "truncated"
                     break
@@ -186,6 +239,23 @@ def main():
             print(f"  ep{ep}: survived={s + 1}, reward={total:.1f}, reason={reason}, "
                   f"clip={getattr(env, '_cur_motion_id', '?')}",
                   flush=True)
+            if args.save_dir:
+                policy = "pd" if args.trust == 0.0 else "release"
+                clip = getattr(env, "_cur_motion_id", "unknown").replace(".pkl", "")
+                np.savez(os.path.join(args.save_dir, f"{policy}_{clip}_{ep:02d}.npz"),
+                         **{k: np.stack(v) if v and np.ndim(v[0]) > 0 else np.array(v)
+                            for k, v in rec.items()})
+                if contacts:
+                    # contacts entries are flat (step, pa.x, pa.y, pa.z,
+                    # pb.x, pb.y, pb.z, actA, actB, sep)
+                    np.savez(os.path.join(
+                        args.save_dir, f"{policy}_{clip}_{ep:02d}_contacts.npz"),
+                        step=np.array([c[0] for c in contacts], dtype=np.int32),
+                        pa=np.array([c[1:4] for c in contacts], dtype=np.float32),
+                        pb=np.array([c[4:7] for c in contacts], dtype=np.float32),
+                        actA=np.array([c[7] for c in contacts], dtype=np.int64),
+                        actB=np.array([c[8] for c in contacts], dtype=np.int64),
+                        sep=np.array([c[9] for c in contacts], dtype=np.float32))
 
     lengths = np.array(lengths)
     cats = Counter()

@@ -303,6 +303,7 @@ class PhysXEnv:
             target = action * self._act_scale + self._act_offset
         else:
             target = action * self.jh + self.jm
+        self._last_joint_target = target.copy()
         self.art.set_joint_drive_targets(target.astype(np.float32))
 
     def _physics_step(self):
