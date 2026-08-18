@@ -209,12 +209,21 @@ struct Articulation {
     // State
     py::array_t<float> get_joint_positions();
     py::array_t<float> get_joint_velocities();
-    // Joint-space generalized forces (cache eFORCE). Read = total joint
-    // force from the last solver step; write = persistent applied force,
-    // re-applied each frame until changed (torque-injection mode).
+    // Joint-space generalized forces (cache eFORCE). Read = the external
+    // force channel (set_joint_forces writes here), NOT the solver total;
+    // write = persistent applied force, re-applied each frame until changed
+    // (torque-injection mode).
     py::array_t<float> get_joint_forces();
     void set_joint_forces(py::array_t<float> forces);
     void zero_joint_forces();
+    // Real joint torque actually transmitted by the drive/solver:
+    // linkIncomingJointForce (reported in the child joint frame) projected
+    // onto the joint axis.  Cache eFORCE does NOT carry this.
+    py::array_t<float> get_joint_torques();
+    // Internal DOF order probe: cache eVELOCITY read.  Cache arrays follow
+    // the INTERNAL DOF index order, which may differ from our XML joint
+    // order — Python matches values to recover the permutation.
+    py::array_t<float> get_joint_velocities_internal();
     // P1-style locked-state experiments: re-pinned root + locked joints let
     // the solver sleep the articulation, zeroing drive forces. Wake it.
     void wake_up() { if(ptr) ptr->wakeUp(); }
@@ -328,6 +337,37 @@ void Articulation::zero_joint_forces() {
     int n = (int)ptr->getDofs();
     for(int i=0;i<n;i++) c->jointForce[i] = 0.f;
     ptr->applyCache(*c, PxArticulationCacheFlag::eFORCE);
+}
+
+py::array_t<float> Articulation::get_joint_torques() {
+    auto *c = get_cache();
+    ptr->copyInternalStateToCache(*c,
+        PxArticulationCacheFlag::eLINK_INCOMING_JOINT_FORCE);
+    int nj = (int)joints.size();
+    py::array_t<float> out(nj);
+    auto buf = out.mutable_unchecked<1>();
+    for(int i=0;i<nj;i++){
+        // joints[i] is the inbound joint of links[i+1]; cache arrays use the
+        // INTERNAL link index — get it from the link, not the vector slot.
+        // The spatial force is in the child joint frame, axis-aligned with
+        // the articulation axis.
+        PxU32 lidx = links[i+1]->getLinkIndex();
+        PxSpatialForce &f = c->linkIncomingJointForce[lidx];
+        if(joint_axes[i]==PxArticulationAxis::eTWIST)       buf(i) = f.torque.x;
+        else if(joint_axes[i]==PxArticulationAxis::eSWING1) buf(i) = f.torque.y;
+        else                                                buf(i) = f.torque.z;
+    }
+    return out;
+}
+
+py::array_t<float> Articulation::get_joint_velocities_internal() {
+    auto *c = get_cache();
+    ptr->copyInternalStateToCache(*c, PxArticulationCacheFlag::eVELOCITY);
+    int n = (int)ptr->getDofs();
+    py::array_t<float> out(n);
+    auto buf = out.mutable_unchecked<1>();
+    for(int i=0;i<n;i++) buf(i) = (float)c->jointVelocity[i];
+    return out;
 }
 
 int Articulation::add_link(int parent_idx, const std::string &name) {
@@ -635,6 +675,8 @@ PYBIND11_MODULE(physx_core, m) {
         .def("get_joint_forces",&Articulation::get_joint_forces)
         .def("set_joint_forces",&Articulation::set_joint_forces,py::arg("forces"))
         .def("zero_joint_forces",&Articulation::zero_joint_forces)
+        .def("get_joint_torques",&Articulation::get_joint_torques)
+        .def("get_joint_velocities_internal",&Articulation::get_joint_velocities_internal)
         .def("wake_up",&Articulation::wake_up)
         .def("get_root_world_pose",&Articulation::get_root_world_pose)
         .def("get_root_world_velocity",&Articulation::get_root_world_velocity)
