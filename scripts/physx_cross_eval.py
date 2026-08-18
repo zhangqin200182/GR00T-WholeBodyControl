@@ -118,6 +118,9 @@ def main():
                              "Isaac-comparison field spec (see "
                              "docs/physx-isaac-data-collection.md); contact "
                              "events go to a separate per-episode npz")
+    parser.add_argument("--t0", action="store_true",
+                        help="Force clip start phase t=0 (cross-engine "
+                             "comparison; default is random start phase)")
     parser.add_argument("--drive-type", default="ACCELERATION",
                         choices=["ACCELERATION", "FORCE"],
                         help="Articulation drive mode: FORCE = Isaac torque-domain "
@@ -154,6 +157,9 @@ def main():
                    pos_iters=8, vel_iters=args.vel_iters,
                    static_pose=False, root_z_offset=0.04, standing_prob=0.0,
                    drive_type=args.drive_type)
+    if args.t0:
+        env._forced_ref_time = 0.0
+        print("Start phase: forced t=0", flush=True)
     if args.sequential:
         # Fixed pairing: keep loader order (loader shuffle is fixed-seed),
         # print the episode<->clip map for cross-engine reproducibility.

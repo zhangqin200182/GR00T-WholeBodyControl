@@ -214,6 +214,10 @@ class PhysXEnv:
         else:
             max_time = (n - self.max_ep - 1) * self._ref_dt
             self._ref_time = np.random.uniform(0, max(0.001, max_time))
+        # _forced_ref_time (set by eval scripts for cross-engine t=0
+        # alignment) overrides the sampled start phase.
+        if getattr(self, "_forced_ref_time", None) is not None:
+            self._ref_time = float(self._forced_ref_time)
 
     def _advance_motion_time(self):
         if not self._static_pose:
