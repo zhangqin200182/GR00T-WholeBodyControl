@@ -1729,3 +1729,15 @@ release 死因 ank_pos=8, ori=3, body_h=2；PD 死因 ank_pos=10, body_h=2（与
 - **接触栈作用域**：ACCEL PD 30.92→42.29（+37%），FORCE PD 27.17→27.88（噪声）——接触栈对生存的帮助在 ACCEL 域生效、FORCE 域中性。
 
 **E8 生产栈（待 clean replay 复核后实施）**：FORCE + Isaac 脚/摩擦 + dt 0.005×4 + vel4，BC warmup + PPO，训练随机相位不变。
+
+### clean replay 复核 (08-19 晚)：相位污染真实但 500 步影响 <2%，clean 表 ≈ 污染表
+
+**clean FORCE 阶梯（A033，state-override）**：cfgF0 0.476 / cfgF1 0.450 / cfgF2 0.484 / cfgF3 0.504 / cfgF4 0.494 —— 与污染版（0.464/0.463/0.496/0.467/0.517）噪声级一致。**dt 档 +0.05 优势在 clean 下消失（cfgF3 0.504 vs cfgF4 0.494）→ dt 0.005×4 是中性项（保留 Isaac 值）**。
+
+**clean 12-clip 表**：均值 0.525 vs 污染版 0.519，逐片段 Δ ≤ ±0.02。首步瞬态（fd 24.6 rad/s、root 蹦 22cm）实测存在，但对 500 步 corr 贡献 <2%。**同事"绝对值全部低估"预期未获数据支持；"排序成立"成立**。配对口径（shifted vs same-index）差异可忽略（0.494 vs 0.495）。
+
+**两个确定收获**：
+1. **fixed12 pkl 悬案关闭**：|reset_qpos − override| = 0.005 rad —— 我们 pkl 与他们录制 ref 帧 0 几乎逐位一致（旧估计 ≤0.05）。
+2. **踝分歧模式 clean 下原样保留**：A476 la −0.35、A050 ra −0.37、A516 ra −0.16、A338 踝 ≈0 —— 踝 pitch 是真实植物残留分歧（非相位伪影），为 E8 后第一定位目标。
+
+**生产栈切换最终论据**（同事门槛"clean 数字上升"未满足，但切换理由不变）：FORCE 忠实语义（corr 0.52 >> ACCEL 0.25）+ FORCE PD 27.88 > Isaac PD 18.58（我们栈不比 Isaac 严苛）。E8 = FORCE + Isaac 脚/摩擦 + dt 0.005×4 + vel4，BC warmup + PPO。
