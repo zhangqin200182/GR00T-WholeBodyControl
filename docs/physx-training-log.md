@@ -1486,3 +1486,214 @@ batch-3 被分支污染的结论在新底座上重测（同 mseed=0、同 12 片
 
 **结论**：batch-3 的「depen 协同杠杆」正式证伪——depen 在任何组合下零增益，此前 25.6→32.9 的"提升"是排列硬币翻转假象。**唯一有效的静态参数是 armature**（release +13%、PD +26%）。config 决策：depen 保持默认开（无副作用）或关闭均可，不再作为"协同杠杆"引用。
 
+
+### D1 实验：Isaac 真驱动配置（FORCE + CFG + armature ON）(08-20)
+
+**① P1 ③b 复现完成**（`physx_p1_replica_manual.py`：manual 滞后显式 PD + armature ON + root 1.05，DT=5ms，gravity off）：
+
+1. **驱动定律逐位复现**：τ[k] = kp·e[k−1] − kd·v[k−1]，17 组全部 4 位小数一致（tau0 readback 2.8500 vs 2.8501 等）。
+2. **🔴 Isaac 质量阵含 armature**（推翻"Isaac 物理无 armature"结论）：显式定律解读下踝 M_eff 0.0111 vs armature-ON 模型 0.0100（10% 内）、髋 0.065 vs arm-ON 自由模型 0.078（17%）。此前"无 armature"读数是隐式/显式解读伪影（首子步 v0=0 使 h·kd 项消失，第一子步无法判别驱动语义）。
+3. **离散稳定性解释 ARMATURE=0 爆炸**：滞后显式 PD 在 200Hz 的极点分析——自由踝 M=0.0023 → |λ|=3.2（发散）；armature-ON（M=0.0095-0.081）全部 |λ|<1（稳定）。D1 原计划 ARMATURE=0 作废，armature 保留。
+4. **我们最终配置完全稳定**：peak=tau0 精确（零发散）、± 对称、线性；首子步 M_eff 与 arm-ON 自由模型吻合 1-3.5%（髋 0.0807/0.078、膝 0.0644/0.0645、踝 0.00962/0.00954）。
+5. **🔴 Isaac 记录通道互不自洽（重大采集侧发现）**：dq/h = 3.4-4.3× v（从第一子步起，踝恒定 3.37）；dv ≠ h·τ/M（5Hz 检查误差 0.05 > 信号 0.033）；q 二阶差与 τ 反号（等效负质量）。**记录的是驱动内部状态而非物理轨迹**——qpos 通道被放大约 3.4-4×，真实物理响应无法从通道恢复。
+6. **真实 rise90 重构**：从 v 通道 cumsum 推算，45ms 时真实位移仅 ~22% 步进 → 真实 rise90 ≈ 155ms ≈ 我们的 135-155ms。他们表观 35-45ms（此前所有"我们慢 2-5×"结论的依据）是通道伪影。
+7. 5Hz 正弦：我们 amp 0.47/相位 −59°（与滞后环解析解 0.44/−68° 一致 ✓）；Isaac 通道修正后 ~0.21-0.27/−31°（~2× 差距），但通道已证明被破坏，修正值不可靠。超调（髋 10.5%、膝 1%、踝 0%）、ss_err 全部匹配。
+
+**判决**：驱动定律 + 增益 + armature + 阶跃响应（行走主导频段）全部对齐；③b 表观差距（45 vs 155ms）为 Isaac 通道伪影，**引擎侧无慢速差距**。D1 复测配置合法：FORCE + CFG 原始增益 + armature ON + vel_iters=4。
+
+**②③ release/PD 复测**（vs 25.67 / 34.33）运行中，结果待补。
+
+### D1 ②③ 复测结果 (08-20)
+
+| 配置 | release | PD | vs 基线 |
+|------|---------|-----|---------|
+| 基线 ANALYTICAL mult=10/kd=8 | 25.67 | 34.33 | — |
+| **D1: FORCE+CFG+armature ON+vel4** | **15.67** | **28.75** | **−39% / −16%** |
+| (Isaac 侧同口径) | 87.33 | 18.58 | — |
+
+- D1 release 死因：ank_pos=5, body_h=4, ori=3, height=1（比基线更分散、更早摔）。
+- **PD 28.75 落在 Isaac 18.58 与基线 34.33 之间**——忠实驱动下我们的 PD 向 Isaac 绝对水平靠拢（gap 15.75→10.17），但 release 在忠实驱动下被压得更狠（15.67 < PD）。
+- **判读**：FORCE+CFG 软驱动下策略力矩按植物真实惯量生效——我们的植物髋/膝 M_eff 仍比 Isaac 重 17%/32%（首子步测量）→ 跟踪变弱、更早摔。基线 mult=10 的刚度掩盖了这个惯量差。**残留差距定位植物侧，与 torso 静态 bug（+1.036kg、CoM z +29mm、俯仰惯量 2.1-2.4×）方向一致**——髋驱动腿对抗的躯干俯仰惯量被放大。
+- **下一步**：torso/waist/wrist 静态修复（任务 #7）→ P1 髋 M_eff 复验（预测 0.0807→≈0.065 与 Isaac 汇合）→ release/PD 复测。D1 实验价值：驱动定律/armature/通道伪影三大结论 + 排除驱动层，剩余唯一已知物理差异 = torso 静态 bug。
+
+### D2 结果：torso/waist/wrist 静态修复 (08-19) —— ✅ 修复验证通过，行为 null
+
+**修复内容**（任务 #7 收尾）：手部质量错位归并的精确修正——torso 7.816→按 URDF 归并（head 1.036 与 torso 精确 lumped，CoM z 0.1799→0.1746 XML 系）、waist_yaw 0.244→0.214、wrist 0.255→0.781（wrist_yaw+wrist_roll+wrist_pitch+hand 8 links 精确 lumped，此前丢失的 1.023kg 手部质量恢复）。整机 vs Isaac URDF 资产：**ΔCoM 0.0022mm、ΔI 8.3e-6 kg·m²、Δmass −0.002kg**（logo+pelvis_contour 有意跳过）。
+
+**D2 复测**（基线 ANALYTICAL mult=10/kd=8，同 run_fixed12）：
+
+| 指标 | 修复前 | 修复后 | 变化 |
+|------|--------|--------|------|
+| release | 25.67 | **25.25** | −1.6%（噪声内） |
+| PD | 34.33 | **33.83** | −1.5%（噪声内） |
+| P1 hip M_eff | 0.08073 | 0.08096 | +0.3% |
+| P1 knee M_eff | 0.06437 | 0.06439 | 0.0% |
+| P1 ankle M_eff | 0.00962 | 0.00962 | 0.0% |
+| rise90 (h/k/a) | 0.155/0.135/0.135 | 同左 | 0.000 |
+| 正弦幅值比 (9 组) | — | 1.000-1.056 | ≈1（hip 2Hz 1.056 噪声） |
+
+release 死因 ank_pos=8, ori=3, body_h=2；PD 死因 ank_pos=10, body_h=2（与修复前同分布）。
+
+**判读**：
+1. **修复本身验证通过**：整机静态质量属性与 Isaac 资产逐位一致；P1 腿部响应逐位不变（精确 lumping 保持躯干俯仰惯量近似守恒，ixx 0.124→0.1217）。
+2. **D1 节的"0.0807→≈0.065"预测被证伪**：torso bug 从来不是髋 M_eff 差距的来源。静态植物差距**关闭**——行为差距不在此。
+3. **残留差距重新定位**：armature 表=Isaac 实测表（hip 0.025101925=99.10/ω² 逐位），腿段质量属性逐位一致，驱动定律逐位一致 → 髋 M_eff 的"17-25% 差距"实为 P1 root-fix 设置伪影：Isaac 实测 0.065 低于固定基模型 0.078 达 17%，我们 0.0807 高于模型仅 3.5%——两侧偏离同一模型方向相反；踝三值（0.0111/0.0100/0.00962）互差 ±10% 内。
+4. **结论**：单关节动力学、静态整机、驱动定律、armature 全部对齐。剩余 PD 生存差距（34 vs 18.6）必在整机/接触侧——**任务 #3 ② PD 轨迹 diff 为决定性下一步**（同一 12 片段逐帧对比，定位首个分歧自由度）。
+
+### ② PD 轨迹 diff (08-19→20)：同一 12 片段两侧逐帧对比 —— PD 层无差距，剩余差距全部在 release 层
+
+**数据**：D3 收集（24 episode npz：12 release + 12 PD，逐 ctrl_step 记录 29-dof qpos/qvel/ref_qpos/joint_target/applied_torque）+ Isaac P0 侧同字段。两侧 eval 均确定（D2/D3/D4 release 25.25/PD 33.83 逐位一致）。
+
+**对齐前提**（此前已解决）：
+- 列序：我们 XML 序 → isaaclab 序用 gather `data[:, ISAAC2XML]`（初始误用 scatter 方向产生过假"重定标不同"结论，已修正）。
+- 末行污染：我们 eval 每 episode 最后一行是 post-reset 状态（root_pos≈root_pos[0] 至 1e-8），比较时丢弃。
+- Isaac root_pos 含 env origin（3 origins 循环）、ref_root_pos 为 env-local；Isaac 起点 = asset 默认位姿（heading −85°，不做 ref 朝向对齐）；Isaac refs 50Hz 平滑、我们 30Hz step-hold。
+
+**逐项对比结果**：
+
+| 项 | 我们 | Isaac | 判决 |
+|----|------|-------|------|
+| ref 内容 | — | — | **0.003-0.016 rad 一致**（同片段同相位，目标=ref 逐位）|
+| PD 跟踪误差 (|q−target|) | 0.03-0.15 rad | 0.14-0.26 mean，峰值 waist_pitch −0.33 / r_ankle +0.31（软增益下垂）| **我们跟踪更好** |
+| root 漂移 | 0.04-0.38 m | 0.13-0.40 m | 我们更小 |
+| z-sag | −0.02 ~ −0.06 | −0.04 ~ −0.12 | 我们更小 |
+| **生存（同严格阈值）** | **34.33** | **18.58** | **我们 PD 更长寿** |
+| 同口径 release | 25.67 | 87.33 | **全部剩余差距在此** |
+
+**判读**：
+1. **PD 层（植物+驱动+接触的联合响应）无差距**——同一批 ref、同一批严格阈值下我们的 PD 生存显著高于 Isaac 自身 PD。D2 之后"剩余差距在整机/接触侧"的悬案到此收敛：PD 轨迹对比直接把整机侧也排除了。
+2. **剩余差距 100% 在 release 层**（87.33 vs 25.67）：策略观测/输入层（obs 侧注入、指令、增益标度）或策略力矩在我们引擎下的生效差异。这与 release P0 采集 bug（策略实际消费每 env 固定的 3 条动捕）互相印证——release 侧数据至今不可用，同事的 obs 侧修复重采是唯一关键路径。
+3. **后续**：applied_torque 读回修复（get_joint_forces 读 eFORCE 注入缓冲 → 全零；已换 get_joint_torques=eLINK_INCOMING_JOINT_FORCE）后做扭矩签名对比，作为植物载荷的最终硬校验（见下）。
+
+### ② 扭矩签名对比 + applied_torque 读回修复 (08-20)
+
+**🔴 发现**：我们 eval 的 `applied_torque` 字段**全零**——`get_joint_forces()` 读的是 eFORCE cache（外部注入缓冲，eACCELERATION 驱动下从未写入）。换用 `get_joint_torques()`（eLINK_INCOMING_JOINT_FORCE，真实现）后 D4 重采（release 25.25 / PD 33.83 逐位复现，物理确定性不受读回影响），12 片段扭矩全部非零（mean 3.48、max 47 Nm）。
+
+**读回正确性验证（决定性）**：τ_rec vs kp·e − kd·v（ANALYTICAL mult=10/kd=8 增益实测：hip 1098.7/558.8、knee 8848/4500、ankle 142500/72000）——**无限幅下 corr = 0.87-1.00 全关节**（腿/腰 0.99+，腕 roll 0.01 Nm 噪声除外）。同一列索引对 qpos/qvel/tgt/tau 同时成立 → 读回顺序 = XML 序，驱动定律端到端逐位执行。**我们的驱动就是公式本身，没有隐藏缩放**。
+
+**跨引擎扭矩对比判读**：
+- 增益相差 11-5000×（我们 ankle kp=142500 vs Isaac 28.50），扭矩波形必然不同（我们紧跟踪 vs 他们软增益下垂）——跨引擎逐关节 corr 0.3-0.67、模板匹配 8/29 是增益差异的必然结果，**不是植物信号**。
+- 扭矩字段两侧都只测控制努力（τ = kp·e − kd·v，Isaac 侧 ④ 已证 R²=1.00000），不直接测植物载荷；载荷只能从运动响应推断——而这正是 PD 轨迹 diff 已回答的问题（我们跟踪更好、生存更长 = 植物无赤字）。
+- **结论**：扭矩层无额外差距。任务 #3 完整闭合：ref 对齐 → PD 轨迹 → 驱动定律 → 扭矩读回，四层全部一致或我们占优；**剩余差距 100% 在 release 层（87.33 vs 25.67），唯一关键路径 = 同事 obs 侧修复重采**。
+
+**顺带发现**：记录扭矩峰值 135.5 Nm（r_knee，crutch 片段）未触限幅——actuatorfrcrange 限幅在 135+ 或未生效，与 Isaac 侧限幅（ankle 10.02 mean 处未见饱和）一致，不阻塞。
+
+### ② release 层本地排查 (08-20→21)：action 语义解密 —— 我们的 scale 是正确的，D6 identity 证伪
+
+**动机**：release 差距（87.33 vs 25.67）100% 在策略输入/输出层。逐一排查 obs 结构与 action 语义。
+
+**Isaac action 语义解密（回归法）**：用 Isaac 数据回归 `action_raw vs ref_qpos`（PD 模式）与 `action_raw vs joint_target`（release 模式）：
+- **PD 模式**：`action_raw = 1.0×(ref − offset)`，29/29 关节 slope≈1.0（R²>0.9），offset 与我们 `_ISAAC_ACT_OFFSET` 一致 ≤0.02 rad（膝 0.680 vs 0.669、踝 −0.381 vs −0.363、肘 0.581 vs 0.6）→ **PD 模式 action manager = identity**。
+- **release 模式**：`action_raw` 巨大（|max| 5.14-5.24，34% 条目超 ±1），`(target−offset)/action_raw` = **0.35-0.55 逐关节 = 我们的 deploy-stack `_ISAAC_ACT_SCALE`**（指纹：腕 yaw 0.076±0.005 vs 我们 0.0745；l_sh_yaw 0.445±0.029 vs 0.4386；la_pitch 0.438 vs 0.4386）→ **release 模式 = normalized action × scale，我们实现正确**。两种模式 action 语义不同（PD 直通 rad，release 走归一化）。
+- 策略为 Gaussian（无 tanh 界）：我们输出 |max| 8.0、Isaac 5.2，同一量级 ✓。
+
+**D6 identity 实验（证伪）**：把 scale 改成全 1 → release **1.33 步**（body_h=7, ori=6 第 1-2 步倒地）。机制：策略输出 ±8 直接当 rad target → target 爆炸 → 被关节限位钳制（D6 step-0 target 全部 = XML 关节限位：lk 1.669、la_pitch −1.363、lh_pitch 0.688…）。D6-PD 30.92 vs D5-PD 33.83 = 浮点路径改变后混沌发散（round-trip 数学恒等，1e-16 扰动在 30+ 步接触动力学中被放大），非系统效应。
+
+**obs_step0 结构核对**（Isaac release env0）：
+- 布局确认 [avh 10×3, jph 10×29, jvh 10×29, ah 10×29, gdh 10×3] = 930，与我们一致。
+- jph fill 行 = reset 位姿 − offset（逐位），与我们的 fill 修复一致；ah 第 9 行 = 策略第一步 action（逐位 = action_raw[0]）；gdh 第 9 行 = 直立重力 [0.04,−0.04,−1.0] ✓。
+- 状态块第 9 行与 npz 记录 qpos[0]/qpos[1] 均不符（最大 0.4 rad），采集时点约定未解——不影响稳态判定。
+
+**下一步**：③b release 重放（A033 500 步 action 注入我们引擎）——同 target 序列下对比 qpos 轨迹：对齐=植物无差距、差距在 obs 环；发散=植物响应 release 类 target 的差距。
+
+### ③b release 重放 (08-21→22)：action clip 根因定位 —— 部署映射在我们的引擎里被 [−1,+1] 裁剪
+
+**重放第一版（A/B 两驱动配置）判读事故**：target/qpos 与 Isaac 全面发散（target mean|d| 最高 1.0 rad、corr 大量负值）。排查发现两个 bug：
+1. **分析脚本列序 bug**：`tgt[:, I2X]` 把 isaac 数据按 isaac 位序输出，与 XML 序错位对比（我们 lk vs 他们 rh_roll）——已修正为 `tgt[:, argsort(I2X)]`（XML 标签 gather）。
+2. **重放脚本注入 bug（真 bug）**：`ar_isaac[k][ISAAC2XML]` 把 isaac 位序 j 的 action 放进 XML 槽 j（只有 lh_pitch 与 r_wr_yaw 两槽恰好一致），27 关节动作全错位 → 机器人原地踏步、轨迹反相关。正确：`ar_isaac[k][XML2ISAAC]`（XML 标签 gather）。env.step 无内部重排，评测管线始终正确（策略在我们环境训练，天然输出 XML 序）。
+
+**修正后重放 B（FORCE+CFG 真增益）**：
+- **target 对齐**：24/29 关节 mean|d| ≤ 0.09 rad、corr 0.86-0.98 → **action→target 映射两侧逐位一致（scale/offset 表正确）**。
+- **🔴 5 个离群关节的 target 在我们侧平顶**（la_pitch 65% 时间钉在 +0.0756、l_sh_yaw 100% 钉在 −0.4386、r_elb 72% 钉在 +1.0386、膝 23% 钉在 +0.3184、腕 pitch 80% 钉在 +0.0745…）。**每个平顶值 = scale×clip(±1) + offset 的精确解**（la_pitch: 0.4386−0.363=0.0756；膝: 0.669−0.3506=0.3184；l_sh_roll: 0.4386+0.2=0.6386）→ **physx_env.py step() 里的 `np.clip(action, −1, 1)`（MuJoCo 时代遗留）把动作裁到了 ±1**。
+- **Isaac 不裁剪**：他们的踝 target 1.672 rad = 0.4386×4.6 action——Gaussian 策略输出 ±5.2（34% 条目超 ±1），部署映射为纯仿射。**我们的 ±1 裁剪把 target 摆幅上限压到 ±scale（0.35-0.55 rad），只有行走所需摆幅的 1/3-1/4**——策略输出 ±8 全被钉在 ±1。
+- 行为后果与重放一致：**我们机器人 500 步原地踏步（位移 0.002m）vs Isaac 横走 0.10m**；qpos 腿关节 corr 0.70-0.83（形态相似）但幅度被裁剪抑制。
+- 修复：移除 clip（本地 + NPU 容器）。E7 无裁剪评测 = 87.33 vs 25.67 差距的候选根因验证。
+
+### ③b 无裁剪重放 + E7 评测 (08-22)：clip 移除后 target 逐位一致，但当前策略是 clip 训练产物
+
+**无裁剪重放 B（FORCE+CFG 真增益）**：
+- **target 29/29 关节 mean|d| ≤ 0.09 rad、0 个关节超 0.1 rad**——action→target 映射与 Isaac 逐位一致（scale/offset/clip 三层全部对齐，部署语义解密完成）。
+- qpos：腿 corr 0.67-0.85（lk 0.778、rh_roll 0.840、rh_yaw 0.854）、腕 0.78-0.94、踝/腰仍低（la_pitch 0.063、waist_pitch 0.188）；初始 qpos 双方一致（≤0.05 rad 全关节）→ 同初值、同 target 下轨迹仍有残余分歧 = 植物对 release 类 target 的闭环响应差距（接触/根动力学侧）。
+- 双方根位移都很小（我们 0.05m@−34°、Isaac 0.10m@87°）——该片段策略实际消费的固定动捕不是 walk_sideway（P0 采集 bug），双方都在原地踏步级运动，yaw 漂移 6.3° vs 3.0° 同量级。
+- 变体 A（stiff mult=10）反而更差（腿 corr 0.34-0.56、z 最高 0.941 弹跳）——stiff 增益放大动力学分歧，Isaac-faithful 的软 CFG 增益才是正确对照。
+
+**E7 评测（无裁剪）**：
+
+| 配置 | release | PD | 注 |
+|------|---------|-----|-----|
+| D5（有裁剪） | 26.00 | 33.83 | |
+| **E7（无裁剪）** | **1.00** | **30.92** | release 全灭，PD 噪声内不变 |
+
+- **release 1.00 = 灾难性**：策略输出 ±8（56.6% 条目超 0.9）在训练时被裁剪钉在 ±1 是"满量程"语义；无裁剪后 target = offset + scale×8（踝 −0.363+0.4386×8 = 3.15 rad）→ 撞 XML 限位 → 第 1 步全灭（ank_pos=8, body_h=6, ori=4）。
+- **判读**：clip 移除对管线保真是正确且必要的（Isaac 部署映射无裁剪，已由他们的 target=scale×4.6 证明），但**当前 release 策略是 clip 语义下训练的产物**——它的输出分布（±8、饱和式满量程）只有在裁剪下才构成有效控制律。87.33 vs 25.67 的差距根因升级为：**训练动作语义错误（裁剪 vs 不裁剪）**，而非单纯的评测侧 bug。
+- PD 30.92 vs 33.83 = 噪声内（ref_action 极少超 ±1，裁剪几乎不生效），与预期一致。
+
+**下一步（E8 路线）**：无裁剪重训 release 策略（BC warmup + PPO，physx_env.py 与 mujoco_env.py 的 clip 均已移除，训练与评测语义一致）。重训后残留的植物侧分歧（重放 B 腿 corr 0.7-0.85）将直接体现在新策略的生存步数上——若仍显著低于 87.33，剩余差距就在植物闭环响应（接触/根动力学），需要回③b 变体对照定位。
+
+## Round-2 规格阶梯扫描 (08-19)：🔴 drive type 是头号杠杆，接触层在 FORCE 下才生效
+
+### 背景：round-2 交付 + 规格对比
+收到 round-2（B1 obs 注入修复 + A1-A3 规格）。对比我们 vs Isaac 接触层：
+| 参数 | 我们 | Isaac |
+|------|------|-------|
+| 脚几何 | 1 个 box 16×7cm | **7 capsules/脚**（URDF 圆柱运行时转 capsule，r 0.008-0.01）|
+| 脚摩擦 | 0.6/0.5（共用）| 0.787/0.531/0.163 |
+| 地面摩擦 | 0.6/0.5 | 1.0/1.0 |
+| bounceThreshold | 2.0 | 0.5 |
+| frictionOffset/CorrDist | 默认 | 0.04/0.025 |
+| vel_iters | 1 | 4 |
+| dt | 0.001961×10 (50.99Hz) | 0.005×4 (50Hz) |
+
+实现：SONIC_PHYSX_ISAAC_FEET（7-capsule 脚扇 + 脚材质）、SONIC_PHYSX_GROUND_FRICTION、bounce/frictionOffset/corrDist/vel_iters env-var 开关、set_shape_material()、replay --native-dt/--decimation。全部 legacy 默认，逐档可切。（commit 7fd1244）
+
+### ACCELERATION 阶梯（A033 round-2）：接触层全灭
+| cfg | leg mean | la_pitch | 注 |
+|-----|----------|----------|-----|
+| cfg0 默认 | 0.292 | −0.028 | |
+| cfg1 +Isaac 脚 | 0.346 | −0.139 | 接触点数 6→19，几何确认生效 |
+| cfg2 +地面摩擦 | 0.333 | −0.117 | |
+| cfg3 +接触参数+vel_iters | 0.342 | −0.138 | |
+| cfg4 +dt 0.005×4 | 0.344 | −0.129 | |
+
+全部噪声级波动 → **接触层不是分歧源（ACCEL 下）**。
+
+### 🔴 关键发现：drive type 是杠杆
+- round-1 12-clip 表（ACCEL 默认）leg mean 0.10-0.39 —— **旧"腿 corr 0.67-0.85"表不复现**。对照训练日志：旧表是 ③b 重放 **FORCE+CFG** 跑的（此前会话已用过 FORCE），committed 脚本默认却是 ACCELERATION。
+- 同数据 FORCE vs ACCEL：A033 leg 0.464 vs 0.292；A050 0.406 vs 0.081。**FORCE = Isaac 真实语义（τ=kp·e−kd·q̇ + forceLimit 钳位），是 loader docstring 注明的 faithful config；ACCELERATION 是近似。**
+- **训练管线（physx_env_manager.py）从未传 drive_type → 全部生产训练跑在 ACCELERATION 上。**
+
+### FORCE 阶梯（A033 round-2）：接触层生效，全规格最优
+| cfg | leg mean | la_pitch | ra_pitch | lk | 注 |
+|-----|----------|----------|----------|-----|-----|
+| cfgF0 FORCE 默认 | 0.464 | 0.227 | 0.407 | 0.768 | |
+| cfgF1 +Isaac 脚 | 0.463 | 0.267 | 0.428 | 0.789 | 单加脚=中性 |
+| cfgF2 +地面摩擦 | 0.496 | 0.335 | 0.447 | 0.816 | |
+| cfgF3 +接触参数 | 0.467 | 0.257 | 0.409 | 0.776 | 接触参数中性 |
+| **cfgF4 +dt 0.005×4** | **0.517** | **0.449** | **0.509** | 0.832 | **踝 corr 首次建立** |
+
+- 双方全程直立（root_z 0.70-0.82）。**踝 pitch 从 ≈0（历史最差定位关节）→ 0.45**。
+- dt 档单独贡献 +0.05 leg / +0.19 la_pitch（10 子步 50.99Hz → 4 子步 50Hz，Isaac 忠实值）。
+- round-1 A033 FORCE 旧值为 la 0.063 → round-2（B1 修复后自洽数据）0.449：**旧数据观测污染造成的低估被修正**。
+
+**下一步**：round-2 12-clip 全规格表（进行中）；E8 生产栈切换 = FORCE + Isaac 脚 + 地面摩擦 + dt 0.005×4（bounce/offset/corrDist/vel_iters 中性，取 Isaac 值保真）。
+
+### round-2 12-clip 全规格表（FORCE + Isaac 脚 + 地面摩擦 + dt 0.005×4）
+
+| clip | leg mean | la_pitch | ra_pitch | lk |
+|------|----------|----------|----------|-----|
+| A509 big_heavy | 0.407 | 0.495 | 0.506 | 0.728 |
+| A518 crutch_turn | 0.556 | 0.304 | 0.171 | 0.657 |
+| A516 crutches_arc | 0.553 | 0.370 | −0.181 | 0.785 |
+| A078 inj_right | 0.570 | −0.023 | 0.760 | 0.547 |
+| A232 injured | 0.557 | 0.361 | 0.304 | 0.649 |
+| A338 injured_torso | 0.530 | −0.030 | −0.316 | 0.849 |
+| A050 ff_loop | 0.441 | 0.159 | −0.371 | 0.748 |
+| A051 ff_stop_270 | 0.601 | 0.315 | 0.323 | 0.868 |
+| A418 ff_stop_360 | 0.512 | 0.137 | 0.419 | 0.830 |
+| A514 into_door | 0.605 | 0.465 | 0.160 | 0.827 |
+| A033 sideway | 0.510 | 0.375 | 0.589 | 0.833 |
+| A476 the_dog | 0.412 | −0.395 | −0.076 | 0.653 |
+
+- leg mean 0.41-0.61（均值 ≈0.52），全面高于 ACCEL 表（0.10-0.39）。膝 0.55-0.87 稳健。
+- **踝 pitch 仍是残留分歧关节**：4 条片段踝 ≈0 或负（A078 la −0.02、A338 −0.03、A476 −0.40、A050 ra −0.37）——下一步候选：踝驱动/惯量（Isaac 踝 M_eff 0.0111 vs 我们模型 0.0100）与根动力学。
+- 裁判口径与旧表一致（heading 未校正的原始 qpos corr、ISAAC_REORDER 映射、wrist 除外）——0.52 是新底数，E8 训练在该栈上进行后应以生存步数直接验证。
