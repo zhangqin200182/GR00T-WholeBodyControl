@@ -1741,3 +1741,21 @@ release 死因 ank_pos=8, ori=3, body_h=2；PD 死因 ank_pos=10, body_h=2（与
 2. **踝分歧模式 clean 下原样保留**：A476 la −0.35、A050 ra −0.37、A516 ra −0.16、A338 踝 ≈0 —— 踝 pitch 是真实植物残留分歧（非相位伪影），为 E8 后第一定位目标。
 
 **生产栈切换最终论据**（同事门槛"clean 数字上升"未满足，但切换理由不变）：FORCE 忠实语义（corr 0.52 >> ACCEL 0.25）+ FORCE PD 27.88 > Isaac PD 18.58（我们栈不比 Isaac 严苛）。E8 = FORCE + Isaac 脚/摩擦 + dt 0.005×4 + vel4，BC warmup + PPO。
+
+## 🔴 obs_step0 取证 (08-19 深夜)：actor obs/动作关节序与 Isaac 错位 —— release 层差距头号根因
+
+**方法**：round-2 B3 的 obs_step0 是 reset 时刻捕获（ah 全零、jph 10 帧静态）→ 指纹法失效。改直接 obs-vs-obs：我们在 NPU 以同样 reset 条件捕获（root quat 逐位相同 [0.7397, 0.0109, 0.0064, −0.6729]）。
+
+**证据**：
+- jph 块 as-is diff 0.786 → **按 isaaclab→mujoco 重排后塌缩到 0.02** → 他们 obs jph = isaaclab 序，我们 = XML/mujoco 序。jvh/ah 同错位。
+- 动作通道同错位（代码确认 `_pd_control` 无重排）：release 策略输出 isaaclab 序，env.step 按 XML 序消费 → 策略的膝关节命令打在我们右膝上（slot 9 是 isaaclab lk ↔ XML rk）。
+- 08-17 obs 审计（6eabb5e）修了块顺序/相对化/cmd 序，**actor 块内部关节序从未被检查**——"obs 不是瓶颈"（release 25.08）结论建立在错位 obs 上。
+- gdh/jvh 差异 = 他们 reset 后 settle 捕获（有速度）vs 我们静止——捕获时机语义差，次要。
+
+**影响**：release 策略在我们环境关节身份全面错乱（只有 ~4/29 槽幸存：slot0/2/6/12…）→ 87 vs 26 差距、±8 vs ±5.2 放大环、E7 灾难的头号新嫌疑。修复方向：physx_env/mujoco_env 输出 isaaclab 序 actor obs + env.step 接受 isaaclab 序动作内部转 XML（env 对外 = Isaac 部署语义），修后重测 release 零样本 + BC warmup 重跑。
+
+## P1 踝 FORCE 专项 (08-19 深夜)：驱动层无分歧 + Isaac P1 时间轴 4× 压缩定量钉死
+
+- 我们 rise90 **135ms** ≈ CFG 增益理论值 128ms ✓；Isaac 标注 40ms = 理论 3.4× 快。
+- **决定性证据**：他们 "5Hz" 正弦幅值 0.909 = 理论在 **1.25Hz** 的响应 0.91；我们 5Hz 实测 0.475 = 理论 5Hz 0.479 → dt 标签 0.005/实际 0.02 的 bug 精确证实（4×）。
+- 修正后他们真值 ≈160ms vs 我们 135ms（略快略硬）→ **踝驱动/惯量无分歧**（armature 维持 D1b 结论 ON）。踝 replay corr 残留（0.45，绕过策略的纯植物层）仍需定位，但排除驱动层。
