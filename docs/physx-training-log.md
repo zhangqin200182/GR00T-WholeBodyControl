@@ -1713,3 +1713,19 @@ release 死因 ank_pos=8, ori=3, body_h=2；PD 死因 ank_pos=10, body_h=2（与
 - 配置：胶囊脚 + 地面摩擦 1.0/1.0 + dt 0.005×4 + vel_iters 4，24 eps × 0.35/0.35，isaac space，无裁剪。
 - 历史锚点：FORCE 17.33/11.58（08-17 带 clip）、ACCEL 25.67（clip）/1.00（E7 无裁剪）、PD 27.17-30.92。
 - 目的：D1 悖论裁决（corr 证据 FORCE 优 vs 生存证据 FORCE 差，D1 判定基于已修复的 torso 质量 bug/action clip/伪影增益）+ E8 前"release 权重在已对齐环境能跑多远"新底数。
+
+### FORCE 零样本 2×2 结果 (08-19)：D1 悖论裁决 = 两个域各自成立
+
+| 配置 | release | PD | 死亡模式 |
+|------|---------|-----|----------|
+| FORCE | **5.25** | 27.88 | rel: ank 22/24；PD: ank 14 + body_h 10 + height 4 |
+| ACCEL | 1.33 | 42.29 | rel: ank 17 + ori 10；PD: ank 22 |
+
+（全 Isaac 栈：胶囊脚+地面摩擦+dt 0.005×4+vel4，无裁剪，24 eps @ 0.35/0.35）
+
+- **release 双路皆死**（5.25 vs 1.33）：clip 训练权重在任何无裁剪环境不可运行，E8 重训是硬前提。5.25 = 已对齐环境新底数。
+- **D1 悖论裁决**：corr 域 FORCE 优（0.52 vs 0.25）、生存域 ACCEL 优（PD 42.29 vs 27.88）——ACCEL ×15000 刚度"扶住"机器人（生存长、物理错），FORCE 忠实软驱动跟踪准、下垂多。不是悖论，是驱动刚度的固有 tradeoff。
+- **FORCE PD 27.88 > Isaac 自侧 PD 18.58**：我们 FORCE 栈在 PD 生存尺度不比 Isaac 严苛——E8 在 FORCE 栈训练不会被物理侧拖死。
+- **接触栈作用域**：ACCEL PD 30.92→42.29（+37%），FORCE PD 27.17→27.88（噪声）——接触栈对生存的帮助在 ACCEL 域生效、FORCE 域中性。
+
+**E8 生产栈（待 clean replay 复核后实施）**：FORCE + Isaac 脚/摩擦 + dt 0.005×4 + vel4，BC warmup + PPO，训练随机相位不变。
