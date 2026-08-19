@@ -72,10 +72,15 @@ class PhysXEnv:
         self._standing_prob = standing_prob  # per-episode prob (0=never, 1=always)
 
         # ── PhysX scene + articulation ──
+        # Isaac runtime values (round-2 A3): vel_iters=4, ground friction
+        # 1.0/1.0.  Env-var overrides; legacy defaults for reproducibility.
+        vel_iters = int(os.environ.get("SONIC_PHYSX_VEL_ITERS", str(vel_iters)))
         self.art = load_g1(px, model_xml, pos_iters=pos_iters, vel_iters=vel_iters,
                              drive_type=drive_type)
         self.scene = px.create_scene(gravity=np.array([0,0,-9.81], dtype=np.float32))
-        mat = self.scene.create_material(0.6, 0.5, 0.0)
+        gf = os.environ.get("SONIC_PHYSX_GROUND_FRICTION", "0.6,0.5")
+        sf, df = (float(x) for x in gf.split(","))
+        mat = self.scene.create_material(sf, df, 0.0)
         self.scene.add_ground_plane(mat, np.array([0,0,1], dtype=np.float32))
         self.scene.add_articulation(self.art)
 
@@ -657,7 +662,12 @@ class PhysXEnv:
 
     def step(self, action):
         if action.ndim == 2: action = action[0]
-        action = np.clip(action, -1, 1).astype(np.float64)
+        # Isaac's deploy mapping is affine with NO action clip (verified from
+        # their release npz: ankle target 1.672 rad = scale x 4.6 action).
+        # Clipping at +-1 caps target swing at +-scale, 3-4x below the gait
+        # amplitudes the policy commands — drive targets then flat-top far
+        # inside the XML limits (2026-08-19 replay flat-top analysis).
+        action = action.astype(np.float64)
 
         # Blend model action with ref_action: action_trust=0 means pure ref_action
         # NaN guard: 0.0 * NaN = NaN in IEEE 754 — model NaNs would leak

@@ -24,13 +24,12 @@ _ISAAC_PD = {
     "wrist_roll": (14.3, 0.9), "wrist_pitch": (16.8, 1.1), "wrist_yaw": (16.8, 1.1),
 }
 
-# P1-measured RUNTIME gains (torque domain, from the Isaac-side single-joint
-# drive-response fits, 2026-08-18).  The colleague's runtime values differ
-# from the CFG formula (kp = armature·ω²) — the formula understates ankle kp
-# by 27× and knee by 4.5×.  With SONIC_PHYSX_DRIVE_ANALYTICAL=1 and
-# MULT=1/KD_MULT=1 the drive reproduces these exact torque-domain gains.
-# hip_pitch kd pending the colleague's 29-joint runtime dump (falls back to
-# the CFG value).
+# ⚠️ RETRACTED (2026-08-18 late): these "measured" gains were fits on the
+# one-sample-lagged applied_torque field (act-then-record convention) and are
+# lag artifacts, NOT Isaac's runtime gains.  The runtime drive is the CFG
+# formula EXACTLY (R²=1.00000, resid 0.0 on all three P1 joints):
+#   tau = armature·ω²·e − 2ζ·armature·ω·q̇,  ω=2π·10Hz, ζ=2.0
+# = the _ISAAC_PD table below.  Do NOT enable SONIC_PHYSX_PD_MEASURED.
 _ISAAC_PD_MEASURED = {
     "knee": (445.0, 24.7),
     "hip_pitch": (143.3, None),
@@ -320,11 +319,62 @@ def load_g1(px, xml_path, pos_iters=8, vel_iters=1, drive_type="ACCELERATION"):
     # positions for observations and rewards (T2 fix).
 
     # Attach collision shapes
+    # Isaac foot geometry (round-2 A1): the real G1 sole is 7 capsules per
+    # foot (URDF cylinders → runtime capsules), not the MJCF 16cm×7cm box.
+    # Gated by env var; when ON, the ankle_roll boxes are replaced by the
+    # exact Isaac capsule fan (identical for both feet in the URDF).
+    isaac_feet = os.environ.get("SONIC_PHYSX_ISAAC_FEET", "0") == "1"
+    foot_links = [i for i, l in enumerate(parser.links)
+                  if "ankle_roll" in l["name"]]
     for shape_info in parser.shapes:
+        if (isaac_feet and shape_info["method"] == "attach_box"
+                and shape_info["args"][0] in foot_links):
+            continue  # replaced by the Isaac capsule fan below
         fn = getattr(art, shape_info["method"])
         fn(*shape_info["args"])
 
+    if isaac_feet:
+        if len(foot_links) != 2:
+            raise ValueError(f"expected 2 ankle_roll links, got {foot_links}")
+        _attach_isaac_feet(art, foot_links)
+
     return art
+
+
+# ── Isaac foot capsule fan (round-2 A1) ──────────────────────────────
+# 7 capsules per foot, from the authoritative main.urdf cylinder list.
+# URDF cylinder axis = z, rpy=[0, ±π/2, 0] → axis along ±x.  PhysX
+# PxCapsuleGeometry axis = shape-local +X (unlike USD/Bullet which use Y),
+# and the axis SIGN is geometrically irrelevant (a capsule is symmetric
+# about its center), so every capsule takes the identity quat — the
+# URDF ±90° rotations reduce to +X vs −X.  Both feet share identical
+# local coords.
+_ISAAC_FOOT_CAPSULES = [
+    # (radius, half_length, [x, y, z], axis_sign(+1=+x, -1=-x))
+    (0.010, 0.025,  [0.075,  -0.026, -0.025], +1),
+    (0.008, 0.0835, [0.0395, -0.018, -0.025], -1),
+    (0.010, 0.091,  [0.039,  -0.010, -0.025], -1),
+    (0.010, 0.093,  [0.039,   0.000, -0.025], -1),
+    (0.010, 0.091,  [0.039,   0.010, -0.025], -1),
+    (0.008, 0.0835, [0.0395,  0.018, -0.025], -1),
+    (0.010, 0.025,  [0.075,   0.026, -0.025], +1),
+]
+
+
+def _attach_isaac_feet(art, foot_links):
+    """Attach the Isaac 7-capsule sole fan to both ankle_roll links.
+
+    Foot material = Isaac per-shape foot material (static 0.787, dynamic
+    0.531, restitution 0.163, round-2 A2).  Called after all other shapes,
+    so replacing the shared material only affects the feet.
+    """
+    art.set_shape_material(0.787, 0.531, 0.163)
+    quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    for lidx in foot_links:
+        for r, half_l, xyz, _sign in _ISAAC_FOOT_CAPSULES:
+            pos = np.array(xyz, dtype=np.float32)
+            art.attach_capsule(lidx, r, half_l, pos, quat)
+    art.set_shape_material(0.6, 0.5, 0.0)  # restore default for safety
 
 
 class _MJCFParser:

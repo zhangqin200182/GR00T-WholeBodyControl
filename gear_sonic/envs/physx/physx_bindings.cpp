@@ -270,6 +270,12 @@ struct Articulation {
         if(!shape_mat) shape_mat = g_physics->createMaterial(0.6f, 0.5f, 0.0f);
         return shape_mat;
     }
+    // Replace the material used by SUBSEQUENT attach_* calls.  The loader
+    // sets the Isaac foot material (0.787/0.531/0.163) right before attaching
+    // the 7-capsule foot fan, then restores the default.  (Round-2 A2.)
+    void set_shape_material(float sf, float df, float rest) {
+        shape_mat = g_physics->createMaterial(sf, df, rest);
+    }
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -722,7 +728,10 @@ PYBIND11_MODULE(physx_core, m) {
              py::arg("pos"),py::arg("quat"))
         .def("attach_capsule",&Articulation::attach_capsule,
              py::arg("link_idx"),py::arg("radius"),py::arg("half_height"),
-             py::arg("pos"),py::arg("quat"));
+             py::arg("pos"),py::arg("quat"))
+        .def("set_shape_material",&Articulation::set_shape_material,
+             py::arg("static_friction"),py::arg("dynamic_friction"),
+             py::arg("restitution"));
 
     m.def("init_foundation",[](){
         if(g_foundation) return;
@@ -744,6 +753,15 @@ PYBIND11_MODULE(physx_core, m) {
         sd.cpuDispatcher=PxDefaultCpuDispatcherCreate(1); sd.filterShader=filter_shader;
         sd.simulationEventCallback=&g_debug_cb;
         sd.bounceThresholdVelocity=2.0f; sd.frictionType=PxFrictionType::ePATCH;
+        // Isaac runtime values (round-2 A3): bounceThreshold 0.5,
+        // frictionOffsetThreshold 0.04, frictionCorrelationDistance 0.025.
+        // Env-var overrides, legacy defaults kept for baseline reproducibility.
+        {const char *e=getenv("SONIC_PHYSX_BOUNCE_THRESHOLD");
+         if(e) sd.bounceThresholdVelocity=atof(e);}
+        {const char *e=getenv("SONIC_PHYSX_FRICTION_OFFSET");
+         if(e) sd.frictionOffsetThreshold=atof(e);}
+        {const char *e=getenv("SONIC_PHYSX_FRICTION_CORR_DIST");
+         if(e) sd.frictionCorrelationDistance=atof(e);}
         sd.solverType=(st=="TGS")?PxSolverType::eTGS:PxSolverType::ePGS;
         PxScene *pxs=g_physics->createScene(sd);
         if(!pxs) throw std::runtime_error("createScene failed");

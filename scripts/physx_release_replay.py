@@ -49,6 +49,10 @@ def main():
     ap.add_argument("--drive-type", default="ACCELERATION",
                     choices=["ACCELERATION", "FORCE"])
     ap.add_argument("--vel-iters", type=int, default=1)
+    ap.add_argument("--native-dt", type=float, default=0.001961,
+                    help="native physics dt (Isaac=0.005; ours legacy=0.001961)")
+    ap.add_argument("--decimation", type=int, default=10,
+                    help="physics steps per control step (Isaac=4 @0.005; legacy=10 @0.001961)")
     ap.add_argument("--save", required=True)
     args = ap.parse_args()
 
@@ -73,7 +77,7 @@ def main():
                        "skip_termination": False,
                        "max_episode_length": T,
                    }),
-                   native_dt=0.001961, decimation=10,
+                   native_dt=args.native_dt, decimation=args.decimation,
                    pos_iters=8, vel_iters=args.vel_iters,
                    static_pose=False, root_z_offset=0.04, standing_prob=0.0,
                    drive_type=args.drive_type)
