@@ -1,0 +1,263 @@
+# Isaac-side specs — round2 A1-A3 (runtime extracted)
+
+=== A1_foot_colliders ===
+{
+  "note": "geoms with CollisionAPI under ankle_roll links (env_0)",
+  "diag_ankle_prims": [
+    "/World/envs/env_0/Robot/joints/left_ankle_roll_joint",
+    "/World/envs/env_0/Robot/joints/right_ankle_roll_joint",
+    "/World/envs/env_0/Robot/left_ankle_roll_link",
+    "/World/envs/env_0/Robot/left_ankle_roll_link/LL_FOOT",
+    "/World/envs/env_0/Robot/left_ankle_roll_link/visuals",
+    "/World/envs/env_0/Robot/left_ankle_roll_link/collisions",
+    "/World/envs/env_0/Robot/right_ankle_roll_link",
+    "/World/envs/env_0/Robot/right_ankle_roll_link/LR_FOOT",
+    "/World/envs/env_0/Robot/right_ankle_roll_link/visuals",
+    "/World/envs/env_0/Robot/right_ankle_roll_link/collisions",
+    "/Visuals/Command/goal/left_ankle_roll_link",
+    "/Visuals/Command/goal/left_ankle_roll_link/target_small",
+    "/Visuals/Command/goal/left_ankle_roll_link/target_small/geometry",
+    "/Visuals/Command/goal/left_ankle_roll_link/target_small/geometry/mesh",
+    "/Visuals/Command/goal/left_ankle_roll_link/target_small/geometry/material",
+    "/Visuals/Command/goal/left_ankle_roll_link/target_small/geometry/material/Shader",
+    "/Visuals/Command/goal/left_ankle_roll_link/target_big",
+    "/Visuals/Command/goal/left_ankle_roll_link/target_big/geometry",
+    "/Visuals/Command/goal/left_ankle_roll_link/target_big/geometry/mesh",
+    "/Visuals/Command/goal/left_ankle_roll_link/target_big/geometry/material",
+    "/Visuals/Command/goal/left_ankle_roll_link/target_big/geometry/material/Shader",
+    "/Visuals/Command/goal/right_ankle_roll_link",
+    "/Visuals/Command/goal/right_ankle_roll_link/target_small",
+    "/Visuals/Command/goal/right_ankle_roll_link/target_small/geometry",
+    "/Visuals/Command/goal/right_ankle_roll_link/target_small/geometry/mesh",
+    "/Visuals/Command/goal/right_ankle_roll_link/target_small/geometry/material",
+    "/Visuals/Command/goal/right_ankle_roll_link/target_small/geometry/material/Shader",
+    "/Visuals/Command/goal/right_ankle_roll_link/target_big",
+    "/Visuals/Command/goal/right_ankle_roll_link/target_big/geometry",
+    "/Visuals/Command/goal/right_ankle_roll_link/target_big/geometry/mesh",
+    "/Visuals/Command/goal/right_ankle_roll_link/target_big/geometry/material",
+    "/Visuals/Command/goal/right_ankle_roll_link/target_big/geometry/material/Shader"
+  ],
+  "tree:.../Robot/left_ankle_roll_link": {
+    "prim_type": "Xform",
+    "geom": "scope",
+    "dims": null,
+    "has_collision_api": false,
+    "local_pos": [
+      -2.3283064365386963e-06,
+      0.11850645393133163,
+      -0.7568637132644653
+    ],
+    "local_quat_xyzw": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  "tree:.../Robot/left_ankle_roll_link/collisions": {
+    "prim_type": "Xform",
+    "geom": "scope",
+    "dims": null,
+    "has_collision_api": false,
+    "local_pos": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "local_quat_xyzw": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  "tree:.../Robot/left_ankle_roll_link/visuals": {
+    "prim_type": "Xform",
+    "geom": "scope",
+    "dims": null,
+    "has_collision_api": false,
+    "local_pos": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "local_quat_xyzw": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  "tree:.../Robot/left_ankle_roll_link/LL_FOOT": {
+    "prim_type": "Xform",
+    "geom": "scope",
+    "dims": null,
+    "has_collision_api": false,
+    "local_pos": [
+      0.03999999910593033,
+      0.0,
+      -0.03700000047683716
+    ],
+    "local_quat_xyzw": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  "usd_capsules_found": 0,
+  "usd_capsule_details": {}
+}
+
+=== A2_friction ===
+{
+  "robot_material_properties_shape": {
+    "shape": [
+      1,
+      45,
+      3
+    ],
+    "env0_shape0": [
+      0.787285566329956,
+      0.5307990312576294,
+      0.16254165768623352
+    ],
+    "env0_all_shapes_first3": [
+      [
+        0.787285566329956,
+        0.5307990312576294,
+        0.16254165768623352
+      ],
+      [
+        1.3064639568328857,
+        0.993288516998291,
+        0.008892029523849487
+      ],
+      [
+        0.36496204137802124,
+        0.719630777835846,
+        0.46985486149787903
+      ]
+    ],
+    "legend": "per-shape [static_friction, dynamic_friction, restitution, ...]"
+  },
+  "ground": {
+    "/World/ground/terrain/physicsMaterial": {
+      "staticFriction": 1.0,
+      "dynamicFriction": 1.0,
+      "restitution": 0.0
+    }
+  },
+  "terrain_cfg_material_err": "Key 'scene' is not in struct\n    full_key: manager_env.scene\n    object_type=dict"
+}
+
+=== A3_scene_contact ===
+{
+  "PhysicsScene.physxScene:bounceThreshold": "0.5",
+  "PhysicsScene.physxScene:enableExternalForcesEveryIteration": "False",
+  "PhysicsScene.physxScene:frictionCorrelationDistance": "0.02500000037252903",
+  "PhysicsScene.physxScene:frictionOffsetThreshold": "0.03999999910593033",
+  "PhysicsScene.physxScene:frictionType": "patch",
+  "PhysicsScene.physxScene:gpuMaxDeformableSurfaceContacts": "1048576",
+  "PhysicsScene.physxScene:gpuMaxParticleContacts": "1048576",
+  "PhysicsScene.physxScene:gpuMaxRigidContactCount": "8388608",
+  "PhysicsScene.physxScene:gpuMaxSoftBodyContacts": "1048576",
+  "PhysicsScene.physxScene:maxPositionIterationCount": "255",
+  "PhysicsScene.physxScene:maxVelocityIterationCount": "255",
+  "PhysicsScene.physxScene:minPositionIterationCount": "1",
+  "PhysicsScene.physxScene:minVelocityIterationCount": "0",
+  "PhysicsScene.physxScene:solveArticulationContactLast": "False",
+  "PhysicsScene.physxScene:solverType": "TGS",
+  "sim_render_dt": "0.02",
+  "sim_physics_dt": "0.005"
+}
+
+=== A1_supplement: URDF authoritative foot geometry ===
+Source: /root/GR00T-WholeBodyControl/gear_sonic/data/assets/robot_description/urdf/g1/main.urdf
+Config: g1.py G1_CYLINDER_MODEL_12_DEX_CFG → replace_cylinders_with_capsules=True
+Note: IsaacLab converts URDF cylinders to capsules at runtime.
+      USD shows Xform scopes only (no UsdGeom.Capsule prims); the runtime
+      PhysX shapes are capsules derived from the 7 cylinders below per foot.
+
+Left foot: 7 cylinders under left_ankle_roll_link
+  [0] cylinder r=0.01  L=0.05  xyz=[0.075  -0.026 -0.025] rpy=[0  1.5708 0]
+  [1] cylinder r=0.008 L=0.167 xyz=[0.0395 -0.018 -0.025] rpy=[0 -1.5708 0]
+  [2] cylinder r=0.01  L=0.182 xyz=[0.039  -0.01  -0.025] rpy=[0 -1.5708 0]
+  [3] cylinder r=0.01  L=0.186 xyz=[0.039   0    -0.025] rpy=[0 -1.5708 0]
+  [4] cylinder r=0.01  L=0.182 xyz=[0.039   0.01 -0.025] rpy=[0 -1.5708 0]
+  [5] cylinder r=0.008 L=0.167 xyz=[0.0395  0.018 -0.025] rpy=[0 -1.5708 0]
+  [6] cylinder r=0.01  L=0.05  xyz=[0.075   0.026 -0.025] rpy=[0  1.5708 0]
+
+Right foot: mirror (same geometry, right_ankle_roll_link)
+
+Capsule conversion: each cylinder → capsule with same radius, half-length = L/2.
+  Effective capsule params per foot (7 capsules):
+  [0] r=0.01  half_L=0.025  pos=[0.075  -0.026 -0.025] rot_y=90°
+  [1] r=0.008 half_L=0.0835 pos=[0.0395 -0.018 -0.025] rot_y=-90°
+  [2] r=0.01  half_L=0.091  pos=[0.039  -0.01  -0.025] rot_y=-90°
+  [3] r=0.01  half_L=0.093  pos=[0.039   0    -0.025] rot_y=-90°
+  [4] r=0.01  half_L=0.091  pos=[0.039   0.01 -0.025] rot_y=-90°
+  [5] r=0.008 half_L=0.0835 pos=[0.0395  0.018 -0.025] rot_y=-90°
+  [6] r=0.01  half_L=0.025  pos=[0.075   0.026 -0.025] rot_y=90°
+
+Foot link offset relative to ankle_roll: xyz=[0.04, 0, -0.037] (LL_FOOT prim)
+
+Solver config:
+  solver_position_iteration_count = 8
+  solver_velocity_iteration_count = 4
+
+=== A3_supplement: PhysX contact defaults ===
+contactOffset: 0.02 (PhysX default, not explicitly set in our config)
+restOffset: 0.0 (PhysX default)
+Note: These are per-shape defaults from PhysX SDK. The actual runtime values
+can be queried via IPhysXContactQuery or shape.get_contact_offset() but
+were not explicitly overridden in our IsaacLab config.
+
+=== A4_calibration: "腿 corr 0.67-0.85" exact run command ===
+This table was produced by the PhysX-side replay script (not Isaac).
+Isaac side provides the baseline data only.
+
+Exact Isaac collection command (round-1, same as round-2):
+  cd /root/GR00T-WholeBodyControl
+  /opt/Anaconda3/envs/isaac/bin/python gear_sonic/isaac_baseline_collect.py \
+    checkpoint=sonic_release/last.pt \
+    manager_env/recorders=empty \
+    +num_envs=3 +headless=true +run_once=false +use_wandb=false \
+    +manager_env.commands.motion.motion_lib_cfg.motion_file=sample_data/robot_filtered_fixed12/fixed12 \
+    +manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=sample_data/smpl_filtered \
+    +manager_env.commands.motion.motion_lib_cfg.override_num_motions_to_load=12
+
+Round-2 adds B1 hijack (inspect.getsource rebind of _resample_command)
+to force motion_id = forced clip index (not arange % num_motions).
+
+Batch wrapper: run_batched_r2.sh (4 batches × 3 envs, serial execution)
+  bash run_batched_r2.sh release /root/isaac_r2_out/release /root/batch_r2_release
+  bash run_batched_r2.sh pd /root/isaac_r2_out/pd /root/batch_r2_pd
+
+Corr computation: done on PhysX/NPU side using the npz files from this collection.
+  The Isaac side does NOT compute corr; it only produces trajectory data.
+  PhysX-side replay script location: see C calibration note below.
+
+=== C_calibration: motion sampling call sites ===
+Round-1 motion sampling override:
+  File: isaac_baseline_collect.py (round-1 version)
+  Line ~651: env.command_manager._motion_lib.sample_motions = lambda ...
+    (overrides MotionLibrary.sample_motions to return forced clip indices)
+
+  BUT: commands.py line ~2825 _resample_command has is_evaluating branch:
+    motion_ids = torch.arange(num_envs) % _num_motions
+  This bypasses the sample_motions override entirely.
+
+Round-2 fix (B1):
+  File: isaac_baseline_collect_r2.py
+  Technique: inspect.getsource(_cls._resample_command) → str.replace
+    "torch.arange(self.num_envs).to(self.device)"
+    → "self._collect_forced_ids.long().to(self.device)"
+  Then exec + method.__get__ to rebind the method.
+  Result: both eval/paired branches use forced clip indices.
+
+P1 data:
+  No re-collection needed per round-2 request (D1 conclusion does not depend on P1).
+  P1 was single-joint drive response: 3 joints × step/sine × 27 tests, dt=0.02s.
+  The "自洽性问题" was a timestamp labeling bug (dt=0.005 labeled, actual dt=0.02).
+  Fixed in v2/v3 delivery; data is valid.
