@@ -625,7 +625,13 @@ void Articulation::attach_box(int lidx, float hx,float hy,float hz, py::array_t<
     // contactOffset must be < the smallest half-extent (foot box hz=0.015).
     // 0.02 > 0.015 inflates the PCM manifold past the thin dimension and the
     // positional correction ejects the robot at ~10 m/s on first contact.
-    s->setContactOffset(hz<0.02f ? 0.005f : 0.02f);
+    // Isaac's default is 0.02 — sweep via SONIC_PHYSX_CONTACT_OFFSET to test
+    // the closed-loop contact-onset divergence (ankle-pitch corr 0.063).
+    static float thin_off = [](){
+        const char *e = getenv("SONIC_PHYSX_CONTACT_OFFSET");
+        return e ? atof(e) : 0.005f;
+    }();
+    s->setContactOffset(hz<0.02f ? thin_off : 0.02f);
     links[lidx]->attachShape(*s);
 }
 void Articulation::attach_capsule(int lidx, float r, float hh, py::array_t<float> p, py::array_t<float> q){
