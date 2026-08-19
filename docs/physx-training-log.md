@@ -1697,3 +1697,19 @@ release 死因 ank_pos=8, ori=3, body_h=2；PD 死因 ank_pos=10, body_h=2（与
 - leg mean 0.41-0.61（均值 ≈0.52），全面高于 ACCEL 表（0.10-0.39）。膝 0.55-0.87 稳健。
 - **踝 pitch 仍是残留分歧关节**：4 条片段踝 ≈0 或负（A078 la −0.02、A338 −0.03、A476 −0.40、A050 ra −0.37）——下一步候选：踝驱动/惯量（Isaac 踝 M_eff 0.0111 vs 我们模型 0.0100）与根动力学。
 - 裁判口径与旧表一致（heading 未校正的原始 qpos corr、ISAAC_REORDER 映射、wrist 除外）——0.52 是新底数，E8 训练在该栈上进行后应以生存步数直接验证。
+
+### 🔴 同事发现 #3：replay 初始相位污染 (08-19) —— 全部新表绝对值被低估
+
+**机制**：committed replay 脚本没设 `_forced_ref_time`，env reset 相位随机采样。他们 a[0] 是策略针对**自己帧 0 姿态**的小修正（post-step 仅 0.067），作用在我们随机相位姿态上 → 首步暴力拽动（fd 速度 24.6 rad/s vs 他们 3.0）→ 整条轨迹从第 0 步带瞬态垃圾（root z 蹦 22cm：0.749-0.971，本轮 sweep 中已观测到，当时误判为 clip 行为差异）。
+
+**旁证（本侧）**：旧 ③b 重放 B（相位匹配，初值差 ≤0.05 rad）FORCE 腿 corr 0.67-0.85 vs 本轮随机相位同数据 0.46 —— 污染量级 ~0.2。
+
+**影响判决**：FORCE vs ACCEL 排序、12-clip 相对顺序仍成立（同受污染，FORCE 显著更高）；**绝对值全部低估，踝逐关节判决与 dt 档 +0.19 贡献需 clean replay 定论**；cross_eval 零样本不受影响（随机相位是训练分布内行为）。
+
+**修复**（同事侧已备好，授权推送容器）：release_replay.py 补丁 = 强制相位 0 + plant 覆盖他们 ref_qpos[0]/ref_root[0]（xyzw→wxyz）+ qvel=0 + 目标同步 + --legacy-reset A/B + --native-dt/--decimation；replay_compare_r2.py 复核。推送后 clean replay 复核 A033 阶梯。
+
+### FORCE 零样本 2×2 (08-19)：FORCE/ACCEL × release/PD @ 全 Isaac 栈
+
+- 配置：胶囊脚 + 地面摩擦 1.0/1.0 + dt 0.005×4 + vel_iters 4，24 eps × 0.35/0.35，isaac space，无裁剪。
+- 历史锚点：FORCE 17.33/11.58（08-17 带 clip）、ACCEL 25.67（clip）/1.00（E7 无裁剪）、PD 27.17-30.92。
+- 目的：D1 悖论裁决（corr 证据 FORCE 优 vs 生存证据 FORCE 差，D1 判定基于已修复的 torso 质量 bug/action clip/伪影增益）+ E8 前"release 权重在已对齐环境能跑多远"新底数。
