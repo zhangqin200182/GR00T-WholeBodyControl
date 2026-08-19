@@ -54,6 +54,10 @@ def main():
     ap.add_argument("--decimation", type=int, default=10,
                     help="physics steps per control step (Isaac=4 @0.005; legacy=10 @0.001961)")
     ap.add_argument("--save", required=True)
+    ap.add_argument("--legacy-reset", action="store_true",
+                    help="Keep the old random-phase reset (A/B vs pre-fix runs). "
+                         "Default: reset phase forced to 0 AND plant state "
+                         "overridden to the npz ref frame 0.")
     args = ap.parse_args()
 
     from omegaconf import OmegaConf
@@ -82,7 +86,38 @@ def main():
                    static_pose=False, root_z_offset=0.04, standing_prob=0.0,
                    drive_type=args.drive_type)
     env._forced_idx = args.ep
+    if not args.legacy_reset:
+        env._forced_ref_time = 0.0
     env.reset()
+    reset_qpos = env.art.get_joint_positions().copy()
+    reset_root_pos, reset_root_quat = env.art.get_root_world_pose()
+
+    if not args.legacy_reset:
+        # Override plant state to Isaac's recorded ref frame 0 (pre-step).
+        # Their convention: state[k] = post-action[k] state (t[0]=0.02);
+        # their pre-step state ~= ref_qpos[0] + 0.067 noise. Our reset
+        # samples a random clip phase, which turns their small policy action
+        # a[0] into a violent transient (fd vel 24.6 rad/s on step 0 vs
+        # their 3.0) — replay then compares garbage from step 0. Quats in
+        # their npz are xyzw (isaaclab); PhysX setter takes wxyz.
+        try:
+            z_ref_q0 = z["ref_qpos"][0][XML2ISAAC]
+            rp0 = z["ref_root_pos"][0].astype(np.float32)
+            rq0 = z["ref_root_quat"][0].astype(np.float32)  # xyzw
+            rq0_wxyz = np.array([rq0[3], rq0[0], rq0[1], rq0[2]],
+                                dtype=np.float32)
+            env.art.set_joint_positions(z_ref_q0.astype(np.float32))
+            env.art.set_joint_velocities(np.zeros(env.nu, dtype=np.float32))
+            env.art.set_joint_drive_targets(z_ref_q0.astype(np.float32))
+            env.art.set_root_world_pose(rp0, rq0_wxyz)
+            env.art.set_root_world_velocity(np.zeros(3, dtype=np.float32),
+                                            np.zeros(3, dtype=np.float32))
+            print(f"state override: qpos=ref_qpos[0], root={np.round(rp0, 3)}, "
+                  f"|reset_qpos - override|="
+                  f"{np.abs(reset_qpos - z_ref_q0).max():.3f}", flush=True)
+        except KeyError:
+            print("WARNING: npz has no ref_qpos/ref_root fields; "
+                  "falling back to phase-0 reset without override", flush=True)
 
     qpos, qvel, tgt, root_pos, root_quat = [], [], [], [], []
     for k in range(T):
@@ -101,7 +136,9 @@ def main():
     out = os.path.join(args.save, f"replay_{os.path.basename(args.npz)}")
     np.savez(out,
              qpos=np.stack(qpos), qvel=np.stack(qvel), target=np.stack(tgt),
-             root_pos=np.stack(root_pos), root_quat=np.stack(root_quat))
+             root_pos=np.stack(root_pos), root_quat=np.stack(root_quat),
+             reset_qpos=reset_qpos, reset_root_pos=reset_root_pos,
+             reset_root_quat=reset_root_quat)
     print(f"SAVED {out}", flush=True)
 
 
