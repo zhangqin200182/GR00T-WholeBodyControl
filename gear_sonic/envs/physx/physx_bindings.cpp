@@ -56,7 +56,7 @@ static PxFilterFlags filter_shader(
         t1 == PxFilterObjectType::eARTICULATION)
         return PxFilterFlag::eKILL;
     pf = PxPairFlag::eCONTACT_DEFAULT | PxPairFlag::eNOTIFY_TOUCH_FOUND
-       | PxPairFlag::eNOTIFY_TOUCH_LOST;
+       | PxPairFlag::eNOTIFY_TOUCH_PERSISTS | PxPairFlag::eNOTIFY_TOUCH_LOST;
     if (g_contact_debug)
         pf |= PxPairFlag::eNOTIFY_CONTACT_POINTS;
     return PxFilterFlag::eDEFAULT;
@@ -100,6 +100,7 @@ struct DebugContact {
     const void *actA, *actB;
     float sep;            // contact point separation
     PxVec3 impulse;       // world-space contact impulse (force = impulse / dt)
+    PxVec3 point;         // world-space contact POINT position
 };
 static std::vector<DebugContact> g_debug_contacts;
 static std::mutex g_debug_mutex;  // std::mutex: PxMutex needs the foundation, which isn't up yet at static-init
@@ -122,7 +123,7 @@ struct DebugCallback : PxSimulationEventCallback {
                 g_debug_contacts.push_back({a0->getGlobalPose().p,
                                             a1->getGlobalPose().p,
                                             h.actors[0], h.actors[1], pts[j].separation,
-                                            pts[j].impulse});
+                                            pts[j].impulse, pts[j].position});
                 g_debug_mutex.unlock();
             }
         }
@@ -158,7 +159,8 @@ struct Scene {
         for(auto &c : g_debug_contacts)
             out.append(py::make_tuple(c.pa.x, c.pa.y, c.pa.z, c.pb.x, c.pb.y, c.pb.z,
                                       (py::ssize_t)c.actA, (py::ssize_t)c.actB, c.sep,
-                                      c.impulse.x, c.impulse.y, c.impulse.z));
+                                      c.impulse.x, c.impulse.y, c.impulse.z,
+                                      c.point.x, c.point.y, c.point.z));
         g_debug_mutex.unlock();
         return out;
     }
