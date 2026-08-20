@@ -1,0 +1,85 @@
+# R3 protocol_notes — Isaac 侧录制说明（2026-08-20）
+
+## 运行命令
+
+```bash
+cd /root/GR00T-WholeBodyControl
+R3_OUT=/root/isaac_r3_out \
+/opt/Anaconda3/envs/isaac/bin/python gear_sonic/isaac_r3_drive.py \
+  checkpoint=sonic_release/last.pt \
+  manager_env/recorders=empty \
+  +num_envs=1 +headless=true +run_once=false +use_wandb=false \
+  +manager_env.commands.motion.motion_lib_cfg.motion_file=sample_data/robot_filtered_fixed12/fixed12 \
+  +manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=sample_data/smpl_filtered \
+  +manager_env.commands.motion.motion_lib_cfg.override_num_motions_to_load=12
+```
+
+## 驱动配置版本（元数据盖章）
+
+- 增益公式：kp = armature·ω², kd = 2ζ·armature·ω, ω = 2π·10 Hz, ζ = 2.0
+- armature 表（g1.py G1_CYLINDER_MODEL_12_DEX_CFG）：
+  - legs (hip_pitch/hip_roll/knee): ARMATURE_7520_22 = 0.025101925
+  - hip_yaw: ARMATURE_7520_14 = 0.010177520
+  - feet (ankle_pitch/ankle_roll): 2×ARMATURE_5020 = 0.007219450
+  - waist: 2×ARMATURE_5020
+  - waist_yaw: ARMATURE_7520_14
+  - arms: ARMATURE_5020 / ARMATURE_4010
+- 未使用任何 stiff 变体（无 mult=10 等）
+
+## 与协议的三处改动执行情况
+
+1. **free-root**：初始写 root 状态后不再写 root（write_root_pose_to_sim 只在初始化和失衡重试时调用），根完全自由
+2. **PD 持姿**：非扰动关节仅 set_joint_position_target(q0)，不 write_joint_state_to_sim（不锁死）；踝也 PD 持姿（踝柔度保留在载荷路径中）
+3. **初始姿态**：URDF 默认站立姿态（default_joint_pos，双脚并立平衡站）+ root 正立 + 足底 z = 地面下 5mm 预穿透（自适应降根至接触后额外 5mm）
+
+## 与 physx_r3_replica.py 的差异（重要）
+
+| 项 | replica（PhysX 侧） | Isaac 侧实际 |
+|----|--------------------|--------------|
+| 记录频率 | 名义 200Hz（DT=0.005 逐子步） | **实际 50Hz（dt=0.02）** |
+| 控制频率 | 每子步更新 target | 每 0.02s 更新 target（与 P1 真实行为一致） |
+| q0 | ref_qpos[0]（walk_sideway 起始帧） | **default_joint_pos（URDF 默认站立）** |
+| root 初始 | ref_root_pos[0] + root_z_offset | 锚点 xy + 自适应 z + 正立 quat |
+
+**记录频率说明**：Isaac 侧 physics_context 固定 substeps=4（rendering_dt 0.02 / physics_dt 0.005），
+一次 sim.step() 推进 0.02s，无法逐 0.005 子步取数。因此实际记录 = 控制步 = 50Hz。
+README "200Hz 记录" 为名义值；真实行为与 P1 相同（P1 也是 dt=0.02 记录）。
+npz 元数据已盖章：record_hz_nominal=200, record_hz_actual=50, control_dt=0.02, record_dt=0.02。
+
+**q0 差异说明**：walk_sideway 起始帧踝预弯 -0.35~-0.47 rad，重心偏前，纯 PD 持姿下
+机器人必然前倾倒下（0.05 rad 扰动也倒）。README 主协议要求"默认站立 ref 姿态、双脚并立"，
+故采用 URDF 默认站立姿态（平衡、双脚并立），root 正立。若 PhysX 侧用 walk 起始帧，
+对比时建议 PhysX 侧也改用默认站立，或按 q0 字段（npz 内嵌）对齐。
+
+## 失衡截断统计
+
+- step 18 组：全部完整 100 步（2.0s），无截断
+- sine 9 组：全部在 ~113-118 步（2.26-2.36s）因 root pitch > 0.35 rad 截断
+  （0.5/2/5Hz 均截断；free-root + 软 PD 持姿在持续正弦激励下前倾发散，物理真实）
+- 截断数据保留：`r3_*_truncated.npz`（第一次尝试，触地前可用）
+- 主文件为重试结果（retries=1），同样截断但数据更完整
+
+截断阈值：root roll/pitch > 0.35 rad（replica env 的 ori_thresh=0.35）
+或双脚接触力均 < 1N 连续 10 步（200ms）。
+
+## 记录字段（每 npz，24 字段）
+
+t(0.02 间隔), qpos(29), qvel(29), target(29), applied_torque(29),
+root_pos(3, 全序列), root_quat(4, wxyz, 全序列),
+contact_force_left(3), contact_force_right(3), n_contacts,
+quat_format="wxyz", control_dt=0.02, record_dt=0.02,
+record_hz_nominal=200, record_hz_actual=50,
+drive_cfg="CFG: kp=armature*(2*pi*10)^2, zeta=2.0; g1.py G1_CYLINDER_MODEL_12_DEX_CFG",
+joint_name, kind, param, sign, q0(29), truncated, trunc_reason, retries
+
+applied_torque 语义：与 P1 相同 act-then-record 一样本滞后（驱动原始力矩）。
+
+## 无 critic/tokenizer 全维 obs
+
+本轮仅录制 R3 协议字段；obs 侧全维 actor obs 未录制（README 附2 为可选项，未阻塞）。
+
+## 测试质量说明
+
+- 冒烟测试验证：step 完整跑满、sine 截断为物理发散（pitch 单调增长）、接触力承重正常（~170N/脚）
+- 每试次前重置到标准初始姿态（free-root + 软 PD 无法从漂移状态自恢复）
+- hip_roll step 全部完整（README 预期 hip_roll 最易翻，实际 0.2 rad 内均稳定）
