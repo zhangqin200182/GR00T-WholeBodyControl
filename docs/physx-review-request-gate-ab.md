@@ -22,7 +22,8 @@
 **1. 剩余 7× 差距的归因与优先级**
 
 我方当前候选排序：
-- ① **clip 训练语义**：release 权重是 clip 时代产物，无裁剪下 target 满量程（E7 已证灾难性）。gate-ON 后 12 步的死亡仍是踝位置漂移主导（ank 13）——注意区分两条机制：ank 13 是未裁剪策略的输出问题，replay corr 0.45 是无策略的植物层残余，二者共同打击踝通道，不互为因果。
+- ① **植物闭环残留**（主候选）：replay corr 0.45-0.52（无策略的纯环境量）经策略闭环放大。gate-ON 后死亡仍是踝位置漂移主导（ank 13-15）——与 replay corr 的踝残留同源。
+- ⚠️ **更正（2026-08-20）**："clip 训练语义"是 E7 时代的错误归因，撤回：release 权重是 NVIDIA 在 Isaac 无裁剪训练的；裁剪是我们评测侧遗留物，其真实作用曾是安全阀掩盖 obs 关节序错位（把策略推到 ±8 vs Isaac ±5.2）。gate-ON 修复后 clip 不参与当前差距解释。
 - ② **obs 层遗留**（你们标注"低影响"的项）：mujoco actor 块序 [gdh, avh, ...] 独立项（仅影响 mujoco 管线一致性，生产是 physx）、SMPL 块全零、obs 噪声注入缺失、gdh/jvh 的 settle-捕获语义差。关节序修复后这些是否需要重评影响？其中 **critic/tokenizer 的逐块对齐可以用数据直接判决**：他们 npz 录制了全 clip 的 ref_qpos（50Hz），future 窗口（0.1s × 10 帧）可从后续帧重建——用我们重建的 critic/tokenizer obs 与他们录制的逐块 diff，比"低影响"标注更硬。SMPL 块同理：若他们录制行全零则该项关闭，非零则升级。
 - ③ **植物闭环残留**：踝/根动力学（replay corr 层，绕过策略）。
 - ④ **（补）训练分布对齐**：settle-捕获语义（他们 obs 捕获 qvel 0.5-4.0 rad/s，我们 reset 后 qvel=0）与 obs 噪声注入缺失——影响 E8 训练分布，不解释 release 零样本差距（eval 更干净只会更有利）。
