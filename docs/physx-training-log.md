@@ -1759,3 +1759,16 @@ release 死因 ank_pos=8, ori=3, body_h=2；PD 死因 ank_pos=10, body_h=2（与
 - 我们 rise90 **135ms** ≈ CFG 增益理论值 128ms ✓；Isaac 标注 40ms = 理论 3.4× 快。
 - **决定性证据**：他们 "5Hz" 正弦幅值 0.909 = 理论在 **1.25Hz** 的响应 0.91；我们 5Hz 实测 0.475 = 理论 5Hz 0.479 → dt 标签 0.005/实际 0.02 的 bug 精确证实（4×）。
 - 修正后他们真值 ≈160ms vs 我们 135ms（略快略硬）→ **踝驱动/惯量无分歧**（armature 维持 D1b 结论 ON）。踝 replay corr 残留（0.45，绕过策略的纯植物层）仍需定位，但排除驱动层。
+
+### joint-order gate A/B (08-20)：obs/动作序修复生效 +132%，但非充分 —— 剩余差距在植物闭环+clip 语义
+
+**实现**（同事补丁，commit 187a668）：SONIC_PHYSX_ISAAC_JOINT_ORDER 门控（默认 ON）——actor/critic jph/jvh/ah 按 [:, ISAAC_REORDER] 发射 isaaclab 序；step() 在 trust 混合前 action[ISAAC2XML] 转 XML；ref_action BC 目标 isaaclab 序。OFF = legacy XML 接口。植物零改动（纯接口置换，gate ON/OFF 轨迹逐位一致烟测通过）。
+
+**A/B 首格（FORCE + Isaac 接触栈，24 eps @0.35）**：
+| 格 | 结果 | 判读 |
+|----|------|------|
+| A gateON release | **12.17**（ank 13, ori 11, height 2）| +132% vs OFF；ori 死亡 5→11 = 策略拿回正确关节身份、真正尝试控制 |
+| C gateOFF release | 5.25（ank 22, ori 5）| 逐位复现 2×2 基线 → A/B 干净 |
+| B/D PD | 待补 | sanity：应对 gate 不敏感 |
+
+**判读**：obs/动作序是必要项（灾难级 5.25 → 12.17），**非充分项**——距 87.33 仍有 7×。剩余候选：① clip 训练语义（无裁剪 target 撞限位）② 植物闭环残留（踝 replay corr 0.45、root 动力学）③ obs 层遗留（mujoco 块序、SMPL 块、噪声注入）。E8 = gate-ON 环境无裁剪重训仍为主线。
