@@ -216,10 +216,18 @@ def _worker_loop(worker_id, start_env, num_envs, shm_names, barrier,
                                buffer=shm._shm["orig_dones"].buf, offset=start_env * ORIG_DONE_BYTES)
 
     # ── Create envs ──
+    # Drive/contact stack is pinned by the LAUNCH SCRIPT via env vars
+    # (E8: SONIC_PHYSX_DRIVE_TYPE=FORCE etc. — explicit, not defaults).
+    # Legacy defaults here preserve old-train reproducibility.
+    _drive_type = os.environ.get("SONIC_PHYSX_DRIVE_TYPE", "ACCELERATION")
+    _vel_iters = int(os.environ.get("SONIC_PHYSX_VEL_ITERS", "1"))
+    _native_dt = float(os.environ.get("SONIC_PHYSX_NATIVE_DT", "0.001961"))
+    _decimation = int(os.environ.get("SONIC_PHYSX_DECIMATION", "10"))
     envs = [PhysXEnv(px, model_xml, pkl_dir, config=env_config,
-                     native_dt=0.001961, decimation=10, pos_iters=8, vel_iters=1,
+                     native_dt=_native_dt, decimation=_decimation,
+                     pos_iters=8, vel_iters=_vel_iters,
                      static_pose=static_pose, root_z_offset=root_z_offset,
-                     standing_prob=standing_prob)
+                     standing_prob=standing_prob, drive_type=_drive_type)
             for _ in range(num_envs)]
 
     # ── Initial reset ──
