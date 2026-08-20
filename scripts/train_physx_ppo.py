@@ -131,6 +131,11 @@ class SmokeConfig:
     max_episode_length = 200
     ignore_terminations = True
     alive_bonus = 0.0
+    # Isaac deploy semantics (E8 config audit 2026-08-20): the env's
+    # default is False (legacy action*scale_joint + offset) — training must
+    # match Isaac's offset + scale*action mapping.
+    isaac_action_space = True
+    skip_termination = False
 
 
 def main():
