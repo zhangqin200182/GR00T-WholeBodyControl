@@ -125,7 +125,7 @@
         </body>
       </body>
       <body name="waist_yaw_link">
-        <inertial pos="0.003964 0 0.018769" quat="-0.0178291 0.628464 0.0282471 0.777121" mass="0.244" diaginertia="0.000158561 0.000124229 9.67669e-05" />
+        <inertial pos="0.003494 0.000233 0.018034" quat="0.893657 0.0340106 -0.0578551 -0.443704" mass="0.214" diaginertia="0.000102205 0.000107714 0.000163531" />
         <joint name="waist_yaw_joint" pos="0 0 0" axis="0 0 1" range="-2.618 2.618" actuatorfrcrange="-88 88" damping="0" frictionloss="0" />
         <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.7 0.7 0.7 1" mesh="waist_yaw_link" />
         <body name="waist_roll_link" pos="-0.0039635 0 0.035">
@@ -133,7 +133,7 @@
           <joint name="waist_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.52 0.52" actuatorfrcrange="-50 50" damping="0" frictionloss="0" />
           <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.7 0.7 0.7 1" mesh="waist_roll_link" />
           <body name="torso_link" pos="0 0 0.019">
-            <inertial pos="0.00331658 0.000261533 0.179856" quat="0.999831 0.000376204 0.0179895 -0.00377704" mass="7.816" diaginertia="0.12407 0.111951 0.0325382" />
+            <inertial pos="0.00203109 0.00033977 0.174626" quat="0.721005 0.000891118 -0.692929 0.000975247" mass="7.816" diaginertia="0.0273731 0.10972 0.121743" />
             <joint name="waist_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.52 0.52" actuatorfrcrange="-50 50" damping="0" frictionloss="0" />
             <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.7 0.7 0.7 1" mesh="torso_link" />
             <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="torso_link" />
@@ -175,7 +175,7 @@
                         <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.7 0.7 0.7 1" mesh="left_wrist_pitch_link" />
                         <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="left_wrist_pitch_link" />
                         <body name="left_wrist_yaw_link" pos="0.046 0 0">
-                          <inertial pos="0.0708244 0.000191745 0.00161742" quat="0.510571 0.526295 0.468078 0.493188" mass="0.254576" diaginertia="0.000646113 0.000559993 0.000147566" />
+                          <inertial pos="0.0988345 -0.0044313 -8.91927e-05" quat="-0.680141 0.727327 0.0655343 -0.0640924" mass="0.781122" diaginertia="0.000763707 0.0022251 0.00224787" />
                           <joint name="left_wrist_yaw_joint" pos="0 0 0" axis="0 0 1" range="-1.61443 1.61443" actuatorfrcrange="-5 5" damping="0" frictionloss="0" />
                           <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.7 0.7 0.7 1" mesh="left_wrist_yaw_link" />
                           <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="left_wrist_yaw_link" />
@@ -219,7 +219,7 @@
                         <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.7 0.7 0.7 1" mesh="right_wrist_pitch_link" />
                         <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="right_wrist_pitch_link" />
                         <body name="right_wrist_yaw_link" pos="0.046 0 0">
-                          <inertial pos="0.0708244 -0.000191745 0.00161742" quat="0.493188 0.468078 0.526295 0.510571" mass="0.254576" diaginertia="0.000646113 0.000559993 0.000147566" />
+                          <inertial pos="0.0988345 0.0044313 -8.91927e-05" quat="0.727326 -0.680142 0.0640925 -0.0655344" mass="0.781122" diaginertia="0.000763707 0.00222509 0.00224786" />
                           <joint name="right_wrist_yaw_joint" pos="0 0 0" axis="0 0 1" range="-1.61443 1.61443" actuatorfrcrange="-5 5" damping="0" frictionloss="0" />
                           <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.7 0.7 0.7 1" mesh="right_wrist_yaw_link" />
                           <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="right_wrist_yaw_link" />

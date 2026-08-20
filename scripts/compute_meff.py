@@ -62,7 +62,7 @@ def meff(xml_path):
     pelvis = tree.getroot().find("worldbody").find("body")
 
     # FK at default pose: world_T[body], world_R[body] (quat), joints get
-    # world_pos (parent-frame joint pos in world) and world_axis.
+    # world_pos (child-frame joint pos in world) and world_axis.
     world_T = {"pelvis": np.zeros(3)}
     world_R = {"pelvis": np.array([1.0, 0.0, 0.0, 0.0])}
     links = {}    # name -> {"T", "R", "inertial", "parent"}
@@ -74,25 +74,31 @@ def meff(xml_path):
         bpos = parse_vec(body_el.get("pos", "0 0 0"))
         bquat = np.array([float(x) for x in (body_el.get("quat") or "1 0 0 0").split()])
         pT = world_T[pname]; pR = world_R[pname]
-        # joints declared in THIS body connect parent -> this body; their
-        # pos/axis are in the PARENT frame (MuJoCo convention).  The joint
-        # rotation about the parent-frame axis comes BEFORE the body quat.
+        # Joints declared in this body connect parent -> this body.  MuJoCo
+        # convention: the joint pos/axis are in the CHILD body's local frame,
+        # so with pos="0 0 0" the joint center coincides with the child body
+        # origin (2026-08-20: verified against mujoco xanchor; the old
+        # parent-frame placement put the ankle axis at the knee and inflated
+        # ankle M_eff ~38x vs the deployed table in physx_loader.py).
         R_joint = pR
+        body_joints = []
         for child in body_el.findall("joint"):
             jname = child.get("name")
             if jname == "floating_base_joint":
                 continue
             jpos = parse_vec(child.get("pos", "0 0 0"))
             axis = parse_vec(child.get("axis", "0 0 1"))
-            joints[jname] = {
-                "world_pos": pT + q_rot(pR, jpos),
-                "world_axis": q_rot(pR, axis),
-            }
-            joint_child[jname] = bname
             qj = ACT_OFFSET.get(jname, 0.0)
             R_joint = q_mult(R_joint, axis_quat(axis, qj))
+            body_joints.append((jname, jpos, axis))
         R = q_mult(R_joint, bquat)
         T = pT + q_rot(R_joint, bpos)
+        for jname, jpos, axis in body_joints:
+            joints[jname] = {
+                "world_pos": T + q_rot(R, jpos),
+                "world_axis": q_rot(R, axis),
+            }
+            joint_child[jname] = bname
         inertial = body_el.find("inertial")
         links[bname] = {"T": T, "R": R, "inertial": inertial, "parent": pname}
         world_T[bname] = T; world_R[bname] = R
