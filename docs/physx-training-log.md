@@ -1772,3 +1772,15 @@ release 死因 ank_pos=8, ori=3, body_h=2；PD 死因 ank_pos=10, body_h=2（与
 | B/D PD | 待补 | sanity：应对 gate 不敏感 |
 
 **判读**：obs/动作序是必要项（灾难级 5.25 → 12.17），**非充分项**——距 87.33 仍有 7×。剩余候选：① clip 训练语义（无裁剪 target 撞限位）② 植物闭环残留（踝 replay corr 0.45、root 动力学）③ obs 层遗留（mujoco 块序、SMPL 块、噪声注入）。E8 = gate-ON 环境无裁剪重训仍为主线。
+
+**A/B 全表（08-20）**：
+
+| 格 | gate | 模式 | 结果 | 死亡 |
+|----|------|------|------|------|
+| A | ON | release | **12.17** | ank 13, ori 11, height 2 |
+| B | ON | PD | 27.88 | ank 14, body_h 10, height 4, ori 1 |
+| C | OFF | release | 5.25 | ank 22, ori 5 |
+| D | OFF | PD | 27.88（逐位同 B）| 同 B |
+
+- B/D 逐位相同（27.88 = 2×2 复现）→ **gate 对 PD 路径零影响，sanity 通过**；C 复现 5.25 → A/B 干净。
+- A vs C +132%：修复生效但非充分——ori 死亡 5→11 = 策略拿回正确关节身份后在真正控制，踝位置漂移（ank 13）仍是第一死因，与踝 replay corr 0.45 的植物残留互相印证。
