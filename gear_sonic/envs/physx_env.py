@@ -53,8 +53,16 @@ VR_3POINT_OFFSETS = np.array([[0.18, -0.025, 0.0], [0.18, 0.025, 0.0],
 ISAAC_REORDER = np.array([0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22,
                           4, 10, 16, 23, 5, 11, 17, 24, 18, 25, 19, 26,
                           20, 27, 21, 28], dtype=np.int64)
+ISAAC2XML = np.argsort(ISAAC_REORDER)  # isaaclab → XML gather
 # 12 leg joints (hip_pitch/roll/yaw, knee, ankle_pitch/roll × L/R) in isaaclab order
 LEG_ISAAC_INDICES = np.array([0, 1, 3, 4, 6, 7, 9, 10, 13, 14, 17, 18], dtype=np.int64)
+# obs/action joint-order gate (2026-08-19 obs_step0 forensics): the release
+# checkpoint's actor obs jph/jvh/ah blocks are isaaclab-ordered, not
+# XML-ordered — the policy was consuming our XML-ordered joints under
+# isaaclab identity. ON (default): env emits isaaclab-ordered joint blocks
+# and env.step accepts isaaclab-ordered actions (converted to XML
+# internally). OFF: legacy XML interface for A/B zero-shot comparison.
+_ISAAC_JOINT_ORDER = os.environ.get("SONIC_PHYSX_ISAAC_JOINT_ORDER", "1") != "0"
 ACTOR_DIM = 930; CRITIC_DIM = 1645; TOKENIZER_DIM = 1761
 HIST = 10
 
@@ -346,10 +354,13 @@ class PhysXEnv:
         return (q - self.jm) / self.jh
 
     def _obs(self):
+        ref_action = self._ref_action()  # XML order (plant space)
+        if _ISAAC_JOINT_ORDER:
+            ref_action = ref_action[ISAAC_REORDER]  # BC target in isaaclab order
         return {"actor_obs": self._compute_actor_obs(),
                 "critic_obs": self._compute_critic_obs(),
                 "tokenizer": self._build_tokenizer(),
-                "ref_action": self._ref_action()}
+                "ref_action": ref_action}
 
     def _compute_actor_obs(self):
         # Isaac obs alignment (08-17, obs audit): block order is
@@ -365,8 +376,13 @@ class PhysXEnv:
         self._shift_histories()
         self._gdh[-1] = g_body; self._avh[-1] = ang_vel
         self._jph[-1] = jpos - self._act_offset; self._jvh[-1] = jvel
+        jph, jvh, ah = self._jph, self._jvh, self._ah  # XML order internally
+        if _ISAAC_JOINT_ORDER:
+            jph = jph[:, ISAAC_REORDER]
+            jvh = jvh[:, ISAAC_REORDER]
+            ah = ah[:, ISAAC_REORDER]
         return np.concatenate([b.flatten() for b in
-            [self._avh, self._jph, self._jvh, self._ah, self._gdh]]).astype(np.float32)
+            [self._avh, jph, jvh, ah, self._gdh]]).astype(np.float32)
 
     def _compute_critic_obs(self):
         root_pos, root_quat = self.art.get_root_world_pose()
@@ -389,8 +405,13 @@ class PhysXEnv:
         lin_vel = quat_apply(quat_inv(root_quat), lin_vel_world)
         self._lvh[-1] = lin_vel; self._prev_root_pos = root_pos.copy()
 
+        jph, jvh, ah = self._jph, self._jvh, self._ah  # XML order internally
+        if _ISAAC_JOINT_ORDER:
+            jph = jph[:, ISAAC_REORDER]
+            jvh = jvh[:, ISAAC_REORDER]
+            ah = ah[:, ISAAC_REORDER]
         parts = [cmd_mf, pos_b.flatten(), ori_6d, body_pos_b, body_ori_flat] + \
-                [b.flatten() for b in [self._lvh, self._avh, self._jph, self._jvh, self._ah]]
+                [b.flatten() for b in [self._lvh, self._avh, jph, jvh, ah]]
         return np.concatenate(parts).astype(np.float32)
 
     def _build_tokenizer(self):
@@ -668,6 +689,9 @@ class PhysXEnv:
         # amplitudes the policy commands — drive targets then flat-top far
         # inside the XML limits (2026-08-19 replay flat-top analysis).
         action = action.astype(np.float64)
+        if _ISAAC_JOINT_ORDER:
+            # Policy emits isaaclab order; plant/PD/ref are XML order.
+            action = action[ISAAC2XML]
 
         # Blend model action with ref_action: action_trust=0 means pure ref_action
         # NaN guard: 0.0 * NaN = NaN in IEEE 754 — model NaNs would leak

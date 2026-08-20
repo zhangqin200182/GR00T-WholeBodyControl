@@ -22,6 +22,16 @@ VR_3POINT_BODY = ("left_wrist_yaw_link", "right_wrist_yaw_link", "torso_link")
 VR_3POINT_OFFSETS = np.array([[0.18, -0.025, 0.0], [0.18, 0.025, 0.0],
                                [0.0, 0.0, 0.35]], dtype=np.float32)
 LOWER_JOINT_INDICES = list(range(12))
+# isaaclab joint-order interface (same contract as PhysXEnv, 2026-08-19
+# obs_step0 forensics): ISAAC_REORDER[i] = mujoco index of the joint at
+# isaaclab position i; env emits isaaclab-ordered joint blocks and env.step
+# accepts isaaclab-ordered actions when _ISAAC_JOINT_ORDER is ON.
+ISAAC_REORDER = np.array([0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22,
+                          4, 10, 16, 23, 5, 11, 17, 24, 18, 25, 19, 26,
+                          20, 27, 21, 28], dtype=np.int64)
+ISAAC2XML = np.argsort(ISAAC_REORDER)
+LEG_ISAAC_INDICES = np.array([0, 1, 3, 4, 6, 7, 9, 10, 13, 14, 17, 18], dtype=np.int64)
+_ISAAC_JOINT_ORDER = os.environ.get("SONIC_PHYSX_ISAAC_JOINT_ORDER", "1") != "0"
 ACTOR_DIM = 930; CRITIC_DIM = 1645; TOKENIZER_DIM = 1761
 HIST = 10  # history_length
 
@@ -246,7 +256,12 @@ class MuJoCoEnv:
         self._shift_histories()
         self._gdh[-1] = g_body; self._avh[-1] = ang_vel
         self._jph[-1] = jpos; self._jvh[-1] = jvel
-        return np.concatenate([b.flatten() for b in [self._gdh, self._avh, self._jph, self._jvh, self._ah]]).astype(np.float32)
+        jph, jvh, ah = self._jph, self._jvh, self._ah  # XML order internally
+        if _ISAAC_JOINT_ORDER:
+            jph = jph[:, ISAAC_REORDER]
+            jvh = jvh[:, ISAAC_REORDER]
+            ah = ah[:, ISAAC_REORDER]
+        return np.concatenate([b.flatten() for b in [self._gdh, self._avh, jph, jvh, ah]]).astype(np.float32)
 
     def _compute_critic_obs(self):
         root_pos = self.data.xpos[self._body_idx["pelvis"]]
@@ -254,6 +269,9 @@ class MuJoCoEnv:
         ref_root_pos = self._ref_root_pos(); ref_root_quat = self._ref_root_quat()
 
         future_pos = self._future_dof(); future_vel = self._future_dof_vel()
+        if _ISAAC_JOINT_ORDER:
+            future_pos = future_pos[:, ISAAC_REORDER]
+            future_vel = future_vel[:, ISAAC_REORDER]
         cmd_mf = np.concatenate([future_pos.flatten(), future_vel.flatten()])  # 580
         # anchor pos/ori in robot frame
         pos_b, ori_b = subtract_frame_transforms(root_pos, root_quat, ref_root_pos, ref_root_quat)
@@ -270,8 +288,13 @@ class MuJoCoEnv:
         lin_vel = (root_pos - self._prev_root_pos) / self.ctrl_dt
         self._lvh[-1] = lin_vel; self._prev_root_pos = root_pos.copy()
 
+        jph, jvh, ah = self._jph, self._jvh, self._ah  # XML order internally
+        if _ISAAC_JOINT_ORDER:
+            jph = jph[:, ISAAC_REORDER]
+            jvh = jvh[:, ISAAC_REORDER]
+            ah = ah[:, ISAAC_REORDER]
         parts = [cmd_mf, pos_b.flatten(), ori_6d, body_pos_b, body_ori_flat] + \
-                [b.flatten() for b in [self._lvh, self._avh, self._jph, self._jvh, self._ah]]
+                [b.flatten() for b in [self._lvh, self._avh, jph, jvh, ah]]
         return np.concatenate(parts).astype(np.float32)
 
     def _build_tokenizer(self):
@@ -279,13 +302,17 @@ class MuJoCoEnv:
         ref_root_pos = self._ref_root_pos(); ref_root_quat = self._ref_root_quat()
 
         future_pos = self._future_dof(); future_vel = self._future_dof_vel()
+        if _ISAAC_JOINT_ORDER:
+            future_pos = future_pos[:, ISAAC_REORDER]
+            future_vel = future_vel[:, ISAAC_REORDER]
         cmd_nonflat = np.concatenate([future_pos, future_vel], axis=-1).flatten()  # 580
         future_rp = self._future_ref_root_pos(); cmd_z_mf = future_rp[:, 2:3].flatten()  # 10
         future_rq = self._future_ref_root_quat()
         root_q_e = np.tile(root_quat, (NUM_FUTURE, 1))
         rot_diff = quat_mul(quat_inv(root_q_e), future_rq)
         ori_mf = np.stack([quat_to_matrix(q) for q in rot_diff])[:, :2, :].flatten()  # 60
-        lower_pos = future_pos[:, LOWER_JOINT_INDICES]; lower_vel = future_vel[:, LOWER_JOINT_INDICES]
+        lower_idx = LEG_ISAAC_INDICES if _ISAAC_JOINT_ORDER else LOWER_JOINT_INDICES
+        lower_pos = future_pos[:, lower_idx]; lower_vel = future_vel[:, lower_idx]
         cmd_lower = np.concatenate([lower_pos.flatten(), lower_vel.flatten()])  # 240
 
         # VR 3-point
@@ -495,7 +522,12 @@ class MuJoCoEnv:
 
     def step(self, action):
         if action.ndim == 2: action = action[0]
-        action = np.clip(action, -1, 1).astype(np.float64)
+        # Isaac deploy mapping is affine with no action clip (2026-08-19
+        # replay flat-top analysis, see physx-training-log ③b).
+        action = action.astype(np.float64)
+        if _ISAAC_JOINT_ORDER:
+            # Policy emits isaaclab order; plant/PD/ref are XML order.
+            action = action[ISAAC2XML]
         # Update action history before PD
         self._ah[:-1] = self._ah[1:]; self._ah[-1] = action
         self._pd_control(action); self._physics_step()

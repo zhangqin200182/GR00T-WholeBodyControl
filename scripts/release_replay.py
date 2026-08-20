@@ -51,9 +51,9 @@ def main():
                     choices=["ACCELERATION", "FORCE"])
     ap.add_argument("--vel-iters", type=int, default=1)
     ap.add_argument("--native-dt", type=float, default=0.001961,
-                    help="native physics dt (Isaac=0.005; ours legacy=0.001961)")
+                    help="Physics substep dt (Isaac sim_dt = 0.005)")
     ap.add_argument("--decimation", type=int, default=10,
-                    help="physics steps per control step (Isaac=4 @0.005; legacy=10 @0.001961)")
+                    help="Substeps per control step (Isaac decimation = 4)")
     ap.add_argument("--save", required=True)
     ap.add_argument("--legacy-reset", action="store_true",
                     help="Keep the old random-phase reset (A/B vs pre-fix runs). "
@@ -84,7 +84,10 @@ def main():
                    }),
                    native_dt=args.native_dt, decimation=args.decimation,
                    pos_iters=8, vel_iters=args.vel_iters,
-                   static_pose=False, root_z_offset=0.04, standing_prob=0.0,
+                   static_pose=False,
+                   root_z_offset=float(os.environ.get(
+                       "SONIC_PHYSX_ROOT_Z_OFFSET", "0.04")),
+                   standing_prob=0.0,
                    drive_type=args.drive_type)
     env._forced_idx = args.ep
     if not args.legacy_reset:
