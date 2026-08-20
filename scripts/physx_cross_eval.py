@@ -155,7 +155,10 @@ def main():
                    }),
                    native_dt=args.native_dt, decimation=args.decimation,
                    pos_iters=8, vel_iters=args.vel_iters,
-                   static_pose=False, root_z_offset=0.04, standing_prob=0.0,
+                   static_pose=False,
+                   root_z_offset=float(os.environ.get(
+                       "SONIC_PHYSX_ROOT_Z_OFFSET", "0.04")),
+                   standing_prob=0.0,
                    drive_type=args.drive_type)
     if args.t0:
         env._forced_ref_time = 0.0

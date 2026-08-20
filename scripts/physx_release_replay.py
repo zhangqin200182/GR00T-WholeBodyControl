@@ -100,7 +100,9 @@ def main():
         # samples a random clip phase, which turns their small policy action
         # a[0] into a violent transient (fd vel 24.6 rad/s on step 0 vs
         # their 3.0) — replay then compares garbage from step 0. Quats in
-        # their npz are xyzw (isaaclab); PhysX setter takes wxyz.
+        # round-2 npz ref_root_quat is ALREADY wxyz (2026-08-20 verified:
+        # elementwise == our pkl reset quat; the old xyzw claim was a
+        # misreading — the flip teleported the robot sideways).
         try:
             z_ref_q0 = z["ref_qpos"][0][XML2ISAAC]
             rp0 = z["ref_root_pos"][0].astype(np.float32)

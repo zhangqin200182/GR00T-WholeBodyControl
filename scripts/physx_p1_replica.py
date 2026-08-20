@@ -8,7 +8,10 @@ trajectory, different engine -> compare torque responses.
 
 Env vars: SONIC_PHYSX_DRIVE_ANALYTICAL / _MULT / _KD_MULT / _PD_MEASURED
           select the drive config under test (standard vs measured gains).
-Run on NPU: python3 scripts/physx_p1_replica.py --out /tmp/p1_ours
+          SONIC_PHYSX_ARMATURE=0 drops joint armatures (Isaac physics has
+          none in the mass matrix — proven from their P1 M=tau/qdd).
+D1 config: SONIC_PHYSX_ARMATURE=0 python3 scripts/physx_p1_replica.py \
+    --drive-type FORCE --no-gravity --isaac-q0 --vel-iters 4 --out /tmp/p1_d1
 """
 import argparse, os, sys
 import numpy as np
@@ -21,7 +24,7 @@ import physx_core  # noqa: E402
 from physx_loader import load_g1  # noqa: E402
 
 XML = "/gear_sonic_deploy/g1/g1_29dof_v17.xml"
-# deploy default_angles (mujoco order, = _ISAAC_ACT_OFFSET)
+# deploy default_angles in g1_29dof_v17.xml order (hip_pitch first)
 Q0 = np.array([
     -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,   # left leg
     -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,   # right leg
@@ -29,33 +32,43 @@ Q0 = np.array([
     0.2, 0.2, 0.0, 0.6, 0.0, 0.0, 0.0,      # left arm
     0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0,     # right arm
 ], dtype=np.float64)
-JOINT_IDX = {"left_hip_pitch": 0, "left_knee": 4, "left_ankle_pitch": 5}
+# XML order (g1_29dof_v17.xml): hip_pitch(0), hip_roll(1), hip_yaw(2),
+# knee(3), ankle_pitch(4), ankle_roll(5), ... — NOT the old mujoco order.
+JOINT_IDX = {"left_hip_pitch": 0, "left_knee": 3, "left_ankle_pitch": 4}
+# Isaac-side P1 q0 (from their npz qpos[0], pre-step reference)
+ISAAC_Q0_OVERRIDE = {"left_hip_pitch": -0.30229777, "left_ankle_pitch": -0.364}
 DT = 0.005  # Isaac sim_dt
 
 
-def run_group(art, scene, j, target_fn, t_end, root0_pos, root0_quat):
-    """Drive joint j with target_fn(t) for t_end s; record per substep."""
-    q = Q0.copy()
+def run_group(art, scene, j, target_fn, t_end, root0_pos, root0_quat, q0):
+    """Drive joint j with target_fn(t) for t_end s; record per substep.
+
+    Resets to q0 at rest at group start (Isaac side resets per group;
+    their qpos[0] = post-first-substep, same act-then-record convention).
+    """
     t = 0.0
     rec = {"t": [], "qpos": [], "qvel": [], "target": [], "torque": []}
-    mask_others = np.ones(29, dtype=bool)
-    mask_others[j] = False
-    art.set_joint_drive_targets(Q0.astype(np.float32))
+    art.set_root_world_pose(root0_pos, np.array([1, 0, 0, 0], dtype=np.float32))
+    art.set_root_world_velocity(np.zeros(3, dtype=np.float32),
+                                np.zeros(3, dtype=np.float32))
+    art.set_joint_positions(q0.astype(np.float32))
+    art.set_joint_velocities(np.zeros(29, dtype=np.float32))
+    art.set_joint_drive_targets(q0.astype(np.float32))
     while t <= t_end + 1e-6:
         # root fixed: re-write pose + zero velocity (drift check like Isaac side)
         art.set_root_world_pose(root0_pos, np.array([1, 0, 0, 0], dtype=np.float32))
         art.set_root_world_velocity(np.zeros(3, dtype=np.float32),
                                     np.zeros(3, dtype=np.float32))
         # lock other joints (FULL 29-arrays; tested joint keeps its current
-        # state, others re-written to default = kinematic lock)
+        # state, others re-written to q0 = kinematic lock)
         qcur = art.get_joint_positions()
         vcur = art.get_joint_velocities()
-        qfull = Q0.copy(); qfull[j] = qcur[j]
+        qfull = q0.copy(); qfull[j] = qcur[j]
         vfull = np.zeros(29); vfull[j] = vcur[j]
         art.set_joint_positions(qfull.astype(np.float32))
         art.set_joint_velocities(vfull.astype(np.float32))
         # drive target for the tested joint only
-        targets = Q0.copy()
+        targets = q0.copy()
         targets[j] = target_fn(t)
         art.set_joint_drive_targets(targets.astype(np.float32))
         art.wake_up()  # re-pinned root + locked joints -> solver sleeps it
@@ -67,9 +80,8 @@ def run_group(art, scene, j, target_fn, t_end, root0_pos, root0_quat):
         rec["qpos"].append(qpos[j])
         rec["qvel"].append(qvel[j])
         rec["target"].append(targets[j])
-        rec["torque"].append(art.get_joint_forces()[j])
+        rec["torque"].append(art.get_joint_torques()[j])
         t += DT
-        q = qpos.copy()
     return {k: np.array(v) for k, v in rec.items()}
 
 
@@ -80,20 +92,34 @@ def main():
                         default=["left_hip_pitch", "left_knee", "left_ankle_pitch"])
     parser.add_argument("--drive-type", default="ACCELERATION",
                         choices=["ACCELERATION", "FORCE"])
+    parser.add_argument("--no-gravity", action="store_true",
+                        help="Zero gravity — Isaac P1 runs with gravity OFF "
+                             "(proven by their steady-state tau=0.0)")
+    parser.add_argument("--isaac-q0", action="store_true",
+                        help="Use Isaac-side P1 q0 for the tested joints")
+    parser.add_argument("--vel-iters", type=int, default=4,
+                        help="Solver velocity iterations (Isaac CFG uses 4)")
     args = parser.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
+    q0 = Q0.copy()
+    if args.isaac_q0:
+        for jname, v in ISAAC_Q0_OVERRIDE.items():
+            q0[JOINT_IDX[jname]] = v
+
     physx_core.init_foundation()
-    art = load_g1(physx_core, XML, pos_iters=8, vel_iters=1,
+    art = load_g1(physx_core, XML, pos_iters=8, vel_iters=args.vel_iters,
                   drive_type=args.drive_type)
-    scene = physx_core.create_scene(gravity=np.array([0, 0, -9.81], dtype=np.float32))
+    gravity = np.zeros(3, dtype=np.float32) if args.no_gravity \
+        else np.array([0, 0, -9.81], dtype=np.float32)
+    scene = physx_core.create_scene(gravity=gravity)
     mat = scene.create_material(0.6, 0.5, 0.0)
     scene.add_ground_plane(mat, np.array([0, 0, 1], dtype=np.float32))
     scene.add_articulation(art)
     # stand above ground (like Isaac side: +0.05 m clearance, no contact)
     root0_pos = np.array([0.0, 0.0, 1.05], dtype=np.float32)
     art.set_root_world_pose(root0_pos, np.array([1, 0, 0, 0], dtype=np.float32))
-    art.set_joint_positions(Q0.astype(np.float32))
+    art.set_joint_positions(q0.astype(np.float32))
     art.set_joint_velocities(np.zeros(29, dtype=np.float32))
 
     for jname in args.joints:
@@ -101,8 +127,8 @@ def main():
         for a in (0.05, 0.1, 0.2):
             for sign in (+1.0, -1.0):
                 tag = f"p1_{jname}_step_{a}{'p' if sign > 0 else 'n'}"
-                rec = run_group(art, scene, j, lambda t, a=a, s=sign: Q0[j] + s * a,
-                                2.0, root0_pos, np.array([1, 0, 0, 0]))
+                rec = run_group(art, scene, j, lambda t, a=a, s=sign: q0[j] + s * a,
+                                2.0, root0_pos, np.array([1, 0, 0, 0]), q0)
                 np.savez(os.path.join(args.out, f"{tag}.npz"), **rec)
                 print(f"{tag}: peak_torque={np.abs(rec['torque']).max():.3f} "
                       f"ss_torque={rec['torque'][-1]:.3f} drift_q="
@@ -110,8 +136,8 @@ def main():
         for f in (0.5, 2.0, 5.0):
             tag = f"p1_{jname}_sine_{f}"
             rec = run_group(art, scene, j,
-                            lambda t, f=f: Q0[j] + 0.05 * np.sin(2 * np.pi * f * t),
-                            4.0, root0_pos, np.array([1, 0, 0, 0]))
+                            lambda t, f=f: q0[j] + 0.05 * np.sin(2 * np.pi * f * t),
+                            4.0, root0_pos, np.array([1, 0, 0, 0]), q0)
             np.savez(os.path.join(args.out, f"{tag}.npz"), **rec)
             print(f"{tag}: peak_torque={np.abs(rec['torque']).max():.3f}", flush=True)
     print("P1 REPLICA COMPLETE")

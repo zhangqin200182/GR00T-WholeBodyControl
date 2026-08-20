@@ -551,10 +551,10 @@ auto Articulation::get_link_world_pose(int idx) -> std::pair<py::array_t<float>,
 // ── State mutation (per-axis) ──
 void Articulation::set_root_world_pose(py::array_t<float> p, py::array_t<float> q) {
     if(!ptr) throw std::runtime_error("not finalized");
-    // Teleport with autowake=TRUE: teleporting a sleeping RC articulation
-    // leaves the link shapes' broad-phase bounds stale — gravity wakes the
-    // articulation mid-fall but the link entries are never re-inserted, and
-    // free-approach contacts don't generate (drop test: 47cm tunnel).
+    // autowake=TRUE: on a SLEEPING articulation setRootGlobalPose with
+    // autowake=false is silently IGNORED — resets after settled/sleeping
+    // episodes then start from the stale pose (2026-08-20 root cause of
+    // the "reset never applies" bug; broad-phase itself was exonerated).
     ptr->setRootGlobalPose(np_to_xf(p,q), true);
     ptr->updateKinematic(PxArticulationKinematicFlag::ePOSITION);
 }
