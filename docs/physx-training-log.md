@@ -2015,3 +2015,18 @@ quat/autowake 修复后的正式基线（override 真正生效，初始态逐位
 **协议层修正**：RC 铰接 setRootLinearVelocity 给全链**均匀速度场**（free-air L=0 实锤）→ 此前 I_eff 读数全部作废（17.8 = 质量用错+0+ 被接触瞬态污染）。free-air CRB 需角速度踢+逐链 L（get_link_world_pose 已有）。纯持力无扰动 **0.8s 自崩**——R3 对比本质 = 纯持力发散速率比（我们 λ3.2 / 他们漂移 0.13）。
 
 **下一步**：① 接线三死变量（接触柔顺）→ 重跑 R3 判别器（验收=我们 pitch(t) 追踪他们曲线）；② free-air 角踢 CRB；③ 根高差（box +2.3cm / 风扇 ✓0.733≈0.731）随接触修复复检。
+
+## 脚参数 A/B 矩阵 (08-21)：摩擦/contactOffset 全 no-op——固定点差异才是线索
+
+- 接线完成（442f895）：SONIC_PHYSX_FOOT_FRICTION / FOOT_CONTACT_OFFSET 只作用于踝形状（按 link 名识别），未设 = 旧行为。.so 重编译 ✓。
+- **A/B/C/D 全矩阵逐位相同**（基线 / 脚摩擦 0.9,0.9 / contactOffset 0.002 / 两者）→ 每 geom 摩擦与 contactOffset 对倾覆动力学 no-op（审核方对 scene 级三参数的 null 预期扩展到 shape 级两参数）。
+- **真线索 = settle 固定点**：我们 settle 踝 e=0.56 rad（q_la −31.65° vs 目标 +0.33°），CoP 钉在**踝线后 35mm（跟缘）**——静平衡要求 x_cop=x_com → 我们 settle 的 COM 在踝后 35mm；Isaac settle e≈0.01、CoP≈踝线（COM 压踝正上）。差异在**平衡位形**，不在瞬态。
+- 排查确认：binding 关节序 = isaac 序（round-trip 验证 ✓ 探针目标未错位）；get_joint_torques = 关节净力（驱动+约束，非驱动指令）——settle τ=4.93 = 驱动 15.9 + 接触反力 −11 的净和 ✓ 自洽。驱动 kp=28.5 在仿真中成立 ✓。
+- 下一步候选：① 风扇脚安装位形 vs URDF 源逐位（安装俯仰错 → 跟缘坐姿）；② 求解器级接触柔顺（pos_iters / TGS vs PGS / depen 速度）；③ 同事侧脚 contactOffset 运行时读数（0.002 待确认）。
+
+## settle 固定点深挖 (08-21 晚)：跟缘态 = 慢崩塌路径上的点，非稳定平衡
+
+- E1（settle 3s）：**settle 期间自己就翻了**（录 t=0 已 99.8°）——q0 持力在我们植物上**没有稳定平衡**，0.5s settle 只是采样了崩塌路径上的一帧（pitch −1.57°/踝 −31.65°/CoP −35mm）。Isaac 同目标持 2s+（e≈0.01、CoP≈踝线）= 稳定（或极慢）平衡。
+- E2（teleport +1cm 前移）：settle 状态逐位相同 → 固定点对初始水平偏移鲁棒，非路径伪影，是确定性吸引子（= 崩塌轨迹本身）。
+- 风扇脚安装位形已核对 = URDF 源（main.urdf 7 胶囊列表，趾 +100mm / 跟 −44mm，踝线 x=0）✓ 几何无误。
+- 机制链（当前）：COM 是原象（x_cop=x_com 静平衡）→ 我们 settle 把 COM 推到踝后 35mm → 踝载荷 11.8 Nm → e=0.56 拉满 → 慢崩塌。Isaac 的 settle 把 COM 留在踝正上。**下一步**：settle 过程逐关节漂移轨迹（哪个关节先走）+ batch-3 参数（armature/速度限幅）A/B + 同事侧 settle 接触点分布。
