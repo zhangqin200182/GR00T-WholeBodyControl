@@ -54,3 +54,4 @@
   - SONIC_PHYSX_ROOT_Z_OFFSET=0.02
   - cross_eval 参数：--drive-type FORCE --vel-iters 4 --native-dt 0.005 --decimation 4 --isaac-space
 - B/D（PD 两格）已在 v1 栈上确认逐位相同（27.88）——PD 无策略路径，gate 不敏感结论与接触栈无关，无需重跑。
+- **v2 全栈 A/C 结果**：gate ON **10.62**（ank 15, ori 15）/ gate OFF 5.42（ank 23, ori 5）。对比结论不变（+96% vs v1 +132%，接触参数在 gate-OFF 侧噪声级 5.25→5.42；gate-ON 侧 −13% 主因 rz 0.02 起步低 2cm）。**序修复必要非充分的判决在两种栈上均成立。**
