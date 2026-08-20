@@ -1862,3 +1862,13 @@ release 死因 ank_pos=8, ori=3, body_h=2；PD 死因 ank_pos=10, body_h=2（与
 **意义**：第一次支撑相的种子候选——若真实步态中任何触地是快速无控制接近（驱动追赶目标时的瞬态），接触不生成 → 深穿透 → 与 Isaac 的触地响应完全不同。行走 replay 中驱动控制掩盖了它，但种子场景正是它。
 
 **下一步**：最小复现（裸 binding 单 box 从 3cm 落下：穿地=场景级/broad-phase 配置问题；正常=articulation 特有）→ 定位 C++ 层。
+
+## 隧道缺陷二分 (08-20 深夜)：pair 创建失效假设，生产路径不受影响
+
+**分叉表**：env.reset（pkl 值，rz 0.04/0.08/0.12 全高度）✅ / env.reset+手动 simulate ✅ / override（npz 值）+3cm（任意顺序、wake、resetFiltering、单双 teleport）❌ 全穿。裸 box ✅、单 link RC ✅。
+
+**关键观察**：reset 路径的接触在 3-4cm 间隙就出现（sep 0.035-0.04 = 旧 sep 之谜的量级！）→ stale pair 特征。
+
+**假设**：scene-add 时刻（构建姿态，足部在/低于地面）pair 建立且永不溶解 → 所有正常路径走旧 pair；新 pair 创建在接近时失效（大位移重插入才触发 = 47cm 隧道）。override 路径的穿地与此一致。
+
+**实践影响**：生产路径（env.reset）不受影响；缺陷潜伏于"无旧 pair 的全新接近"（跳跃/重建后快速触地）。clean replay 的 override 因初始预穿透幸免。下一轮：C++ 两 box 接近 pair 创建测试 + loader 构建姿态确认。
