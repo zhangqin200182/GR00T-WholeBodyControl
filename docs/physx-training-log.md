@@ -1872,3 +1872,14 @@ release 死因 ank_pos=8, ori=3, body_h=2；PD 死因 ank_pos=10, body_h=2（与
 **假设**：scene-add 时刻（构建姿态，足部在/低于地面）pair 建立且永不溶解 → 所有正常路径走旧 pair；新 pair 创建在接近时失效（大位移重插入才触发 = 47cm 隧道）。override 路径的穿地与此一致。
 
 **实践影响**：生产路径（env.reset）不受影响；缺陷潜伏于"无旧 pair 的全新接近"（跳跃/重建后快速触地）。clean replay 的 override 因初始预穿透幸免。下一轮：C++ 两 box 接近 pair 创建测试 + loader 构建姿态确认。
+
+## ✅ "47cm 隧道"根因落定 (08-20 深夜)：quat 约定翻转 + 睡眠态 teleport 被忽略——broad-phase 无罪
+
+**完整机制**（commit 8663f2a）：
+1. round-2 npz 的 `ref_root_quat` **本就是 wxyz**（与我们的 pkl reset quat 逐位相同、yaw 主导旋转 sane）——replay 补丁的 xyzw→wxyz 转换把它翻成 121° 侧躺。
+2. 旧 binding `setRootGlobalPose(autowake=false)` 在睡眠 articulation 上**静默忽略 teleport**——clean replay 的 override 从未生效（初始态一直是 env reset 的 0.823 姿态），顺带掩盖了翻转。
+3. 我改 autowake=true 后翻转开始生效 → drop 探针把机器人 teleport 成侧躺 → "自由落体穿地 47cm" = 侧躺机器人下方没有任何部件。**broad-phase/pair 创建全部无罪**（spawn-above、同姿态 teleport 一直正常）。
+
+**修复**：① 脚本去翻转（直接 wxyz）；② binding autowake=true（teleport 语义正确 + 顺带修复训练路径上 reset-after-sleep 的静默失效）。
+
+**验证**：A033 clean replay 初始态逐位贴合他们 post-step-0（quat [0.7397,0.0289,0.0208,−0.672]、z=0.7805 稳定），corr 0.498（la 0.363 微升）。12-clip v3 表重跑中。
