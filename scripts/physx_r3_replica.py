@@ -27,7 +27,8 @@ for _d in _build:
         break
 import physx_core  # noqa: E402
 
-NPZ_REF = "/tmp/isaac_r2/release_walk_sideway_045_loop_003__A033_00.npz"
+NPZ_REF = os.environ.get("R3_REF_NPZ",
+    "/tmp/r3_isaac/r3_left_hip_pitch_step_0.05p.npz")
 XML_JOINTS = ["lh_pitch", "lh_roll", "lh_yaw", "lk", "la_pitch", "la_roll",
               "rh_pitch", "rh_roll", "rh_yaw", "rk", "ra_pitch", "ra_roll",
               "waist_yaw", "waist_roll", "waist_pitch", "l_sh_pitch",
