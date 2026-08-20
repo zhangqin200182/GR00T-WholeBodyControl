@@ -104,9 +104,11 @@ def main():
         try:
             z_ref_q0 = z["ref_qpos"][0][XML2ISAAC]
             rp0 = z["ref_root_pos"][0].astype(np.float32)
-            rq0 = z["ref_root_quat"][0].astype(np.float32)  # xyzw
-            rq0_wxyz = np.array([rq0[3], rq0[0], rq0[1], rq0[2]],
-                                dtype=np.float32)
+            rq0 = z["ref_root_quat"][0].astype(np.float32)
+            # round-2 npz ref_root_quat is ALREADY wxyz (elementwise == our
+            # pkl reset quat; xyzw->wxyz conversion flips it 121 deg onto
+            # the side — the "47cm tunnel" root cause).  Use as-is.
+            rq0_wxyz = rq0
             env.art.set_joint_positions(z_ref_q0.astype(np.float32))
             env.art.set_joint_velocities(np.zeros(env.nu, dtype=np.float32))
             env.art.set_joint_drive_targets(z_ref_q0.astype(np.float32))

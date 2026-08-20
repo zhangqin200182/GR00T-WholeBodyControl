@@ -164,6 +164,10 @@ struct Scene {
         g_debug_mutex.unlock();
         return out;
     }
+    // Teleport fix candidate: after setRootGlobalPose the RC articulation's
+    // non-root link broad-phase bounds go stale (drop test: free-approach
+    // tunnels 47cm).  resetFiltering rebuilds the actor's broad-phase entry.
+    void reset_filtering(Articulation *art);
     void clear_contacts() {
         g_debug_mutex.lock(); g_debug_contacts.clear(); g_debug_mutex.unlock();
     }
@@ -547,7 +551,11 @@ auto Articulation::get_link_world_pose(int idx) -> std::pair<py::array_t<float>,
 // ── State mutation (per-axis) ──
 void Articulation::set_root_world_pose(py::array_t<float> p, py::array_t<float> q) {
     if(!ptr) throw std::runtime_error("not finalized");
-    ptr->setRootGlobalPose(np_to_xf(p,q), false);
+    // Teleport with autowake=TRUE: teleporting a sleeping RC articulation
+    // leaves the link shapes' broad-phase bounds stale — gravity wakes the
+    // articulation mid-fall but the link entries are never re-inserted, and
+    // free-approach contacts don't generate (drop test: 47cm tunnel).
+    ptr->setRootGlobalPose(np_to_xf(p,q), true);
     ptr->updateKinematic(PxArticulationKinematicFlag::ePOSITION);
 }
 void Articulation::set_root_world_velocity(py::array_t<float> lin, py::array_t<float> ang) {
@@ -652,6 +660,13 @@ void Articulation::attach_capsule(int lidx, float r, float hh, py::array_t<float
 // ═══════════════════════════════════════════════════════════════════════
 // Module
 // ═══════════════════════════════════════════════════════════════════════
+void Scene::reset_filtering(Articulation *art) {
+    // PxArticulationReducedCoordinate is not a PxActor; reset the
+    // broad-phase entry per LINK (PxArticulationLink is a PxRigidActor).
+    if(!ptr || !art || !art->ptr) return;
+    for(auto *l : art->links)
+        if(l) ptr->resetFiltering(*l);
+}
 PYBIND11_MODULE(physx_core, m) {
     m.doc()="PhysX 5 SDK — pybind11 wrapper for SONIC G1 training";
 
@@ -664,7 +679,8 @@ PYBIND11_MODULE(physx_core, m) {
         .def("add_ground_plane",&Scene::add_ground_plane,
              py::arg("material_idx"),py::arg("normal"))
         .def("get_contacts",&Scene::get_contacts)
-        .def("clear_contacts",&Scene::clear_contacts);
+        .def("clear_contacts",&Scene::clear_contacts)
+        .def("reset_filtering",&Scene::reset_filtering,py::arg("art"));
 
     py::class_<Articulation>(m,"Articulation")
         .def(py::init<>())
@@ -774,4 +790,83 @@ PYBIND11_MODULE(physx_core, m) {
        py::return_value_policy::take_ownership);
 
     m.def("_test_quat_roundtrip",[](py::array_t<float> q){return quat_to_np(np_to_quat(q));});
+    m.def("_drop_box_test",[](){
+        // Minimal repro: rigid box (10cm) dropped from 5cm onto the plane.
+        // Tunnels -> scene-level broad-phase config issue; contacts -> the
+        // defect is RC-articulation-specific.
+        if(!g_physics) throw std::runtime_error("call init_foundation() first");
+        PxSceneDesc sd(g_physics->getTolerancesScale());
+        sd.gravity=PxVec3(0,0,-9.81f);
+        sd.cpuDispatcher=PxDefaultCpuDispatcherCreate(1);
+        sd.filterShader=filter_shader;
+        sd.simulationEventCallback=&g_debug_cb;
+        sd.bounceThresholdVelocity=2.0f;
+        sd.solverType=PxSolverType::eTGS;
+        PxScene *s=g_physics->createScene(sd);
+        PxMaterial *m=g_physics->createMaterial(0.6f,0.5f,0.0f);
+        PxRigidStatic *gnd=PxCreatePlane(*g_physics,PxPlane(PxVec3(0,0,1),0.0f),*m);
+        s->addActor(*gnd);
+        PxRigidDynamic *b=g_physics->createRigidDynamic(
+            PxTransform(PxVec3(0,0,0.10f)));
+        PxShape *bs=g_physics->createShape(PxBoxGeometry(0.05f,0.05f,0.05f),*m,true);
+        b->attachShape(*bs);
+        s->addActor(*b);
+        b->wakeUp();
+        py::list out;
+        for(int i=0;i<120;i++){
+            s->simulate(0.005f);
+            s->fetchResults(true);
+            PxTransform t=b->getGlobalPose();
+            g_debug_mutex.lock();
+            size_t n=g_debug_contacts.size();
+            g_debug_contacts.clear();
+            g_debug_mutex.unlock();
+            if(i%10==0)
+                out.append(py::make_tuple(i*0.005f,t.p.z,(py::ssize_t)n));
+        }
+        s->release();
+        return out;
+    });
+    m.def("_drop_link_test",[](){
+        // Minimal RC articulation: single free root link + box, dropped from
+        // 10cm.  Tunnels -> the defect is RC-articulation-link-vs-plane
+        // contact generation on approach; contacts -> robot-specific setup.
+        if(!g_physics) throw std::runtime_error("call init_foundation() first");
+        PxSceneDesc sd(g_physics->getTolerancesScale());
+        sd.gravity=PxVec3(0,0,-9.81f);
+        sd.cpuDispatcher=PxDefaultCpuDispatcherCreate(1);
+        sd.filterShader=filter_shader;
+        sd.simulationEventCallback=&g_debug_cb;
+        sd.bounceThresholdVelocity=2.0f;
+        sd.solverType=PxSolverType::eTGS;
+        PxScene *s=g_physics->createScene(sd);
+        PxMaterial *m=g_physics->createMaterial(0.6f,0.5f,0.0f);
+        PxRigidStatic *gnd=PxCreatePlane(*g_physics,PxPlane(PxVec3(0,0,1),0.0f),*m);
+        s->addActor(*gnd);
+        PxArticulationReducedCoordinate *art =
+            g_physics->createArticulationReducedCoordinate();
+        PxArticulationLink *link = art->createLink(
+            nullptr, PxTransform(PxVec3(0,0,0.10f)));
+        link->setMass(1.0f);
+        link->setMassSpaceInertiaTensor(PxVec3(1.0f,1.0f,1.0f));
+        PxShape *ls=g_physics->createShape(PxBoxGeometry(0.05f,0.05f,0.05f),*m,true);
+        link->attachShape(*ls);
+        s->addArticulation(*art);
+        art->wakeUp();
+        py::list out;
+        for(int i=0;i<120;i++){
+            s->simulate(0.005f);
+            s->fetchResults(true);
+            PxTransform t=link->getGlobalPose();
+            g_debug_mutex.lock();
+            size_t n=g_debug_contacts.size();
+            g_debug_contacts.clear();
+            g_debug_mutex.unlock();
+            if(i%10==0)
+                out.append(py::make_tuple(i*0.005f,t.p.z,(py::ssize_t)n));
+        }
+        art->release();
+        s->release();
+        return out;
+    });
 }
