@@ -634,8 +634,34 @@ void Articulation::attach_sphere(int lidx, float r, py::array_t<float> p, py::ar
     s->setLocalPose(np_to_xf(p,q)); s->setContactOffset(0.02f);
     links[lidx]->attachShape(*s);
 }
+// Foot-shape overrides (Isaac per-geom semantics, 2026-08-21):
+//   SONIC_PHYSX_FOOT_FRICTION="sf,df" — MJCF foot box friction="0.9 0.01 0.001"
+//     -> sf=df=0.9; restitution kept from the current shape material.
+//   SONIC_PHYSX_FOOT_CONTACT_OFFSET="0.002" — Isaac foot solref="0.04 0.8"
+//     -> max(0.001, 0.04*0.05)=0.002 (mjcf_to_usd.py rule).  Our default pad
+//     (0.005 thin / 0.02 capsule) keeps the PCM manifold alive after heel
+//     lift and the positional correction presses the heel back down — the
+//     +980 anti-spring signature.  Unset = legacy behavior.
+static bool is_foot_link(Articulation *a, int lidx) {
+    return a && lidx >= 0 && lidx < (int)a->link_names.size() &&
+           a->link_names[lidx].find("ankle_roll") != std::string::npos;
+}
+static PxMaterial *foot_mat(Articulation *a, int lidx, PxMaterial *def) {
+    if (!is_foot_link(a, lidx)) return def;
+    const char *e = getenv("SONIC_PHYSX_FOOT_FRICTION");
+    if (!e) return def;
+    float sf = 0.f, df = 0.f;
+    if (sscanf(e, "%f,%f", &sf, &df) != 2) return def;
+    return g_physics->createMaterial(sf, df, def->getRestitution());
+}
+static float foot_off(Articulation *a, int lidx, float def) {
+    if (!is_foot_link(a, lidx)) return def;
+    const char *e = getenv("SONIC_PHYSX_FOOT_CONTACT_OFFSET");
+    return e ? atof(e) : def;
+}
 void Articulation::attach_box(int lidx, float hx,float hy,float hz, py::array_t<float> p, py::array_t<float> q){
-    PxBoxGeometry g(hx,hy,hz); auto *m=get_mat();
+    PxBoxGeometry g(hx,hy,hz);
+    auto *m=foot_mat(this, lidx, get_mat());
     PxShape *s=g_physics->createShape(g,*m,true);
     s->setLocalPose(np_to_xf(p,q));
     // contactOffset must be < the smallest half-extent (foot box hz=0.015).
@@ -647,13 +673,15 @@ void Articulation::attach_box(int lidx, float hx,float hy,float hz, py::array_t<
         const char *e = getenv("SONIC_PHYSX_CONTACT_OFFSET");
         return e ? atof(e) : 0.005f;
     }();
-    s->setContactOffset(hz<0.02f ? thin_off : 0.02f);
+    s->setContactOffset(foot_off(this, lidx, hz<0.02f ? thin_off : 0.02f));
     links[lidx]->attachShape(*s);
 }
 void Articulation::attach_capsule(int lidx, float r, float hh, py::array_t<float> p, py::array_t<float> q){
-    PxCapsuleGeometry g(r,hh); auto *m=get_mat();
+    PxCapsuleGeometry g(r,hh);
+    auto *m=foot_mat(this, lidx, get_mat());
     PxShape *s=g_physics->createShape(g,*m,true);
-    s->setLocalPose(np_to_xf(p,q)); s->setContactOffset(0.02f);
+    s->setLocalPose(np_to_xf(p,q));
+    s->setContactOffset(foot_off(this, lidx, 0.02f));
     links[lidx]->attachShape(*s);
 }
 
