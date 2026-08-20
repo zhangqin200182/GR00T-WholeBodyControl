@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
 """Our-side R3 replica — free-root + planted-feet stance response, CFG soft
-gains.  This is the EXECUTABLE DEFINITION of the R3 protocol: the Isaac
-side runs the same perturbations under the same conditions.
-
-Protocol (docs/physx-isaac-request-r3.md):
-  - standing ref pose, both feet planted (5mm pre-penetration), FREE root
-  - non-perturbed joints PD-held at q0 with the CFG gains (not locked;
-    ankles included — they are part of the load path)
-  - perturb hip_pitch / hip_roll / knee (one side): steps +-0.05/0.1/0.2,
-    sines 0.5/2/5 Hz @ 0.05 amplitude
-  - 200Hz recording (0.005 substep), control dt 0.02, 2s steps / 4s sines
-  - records per substep: t, qpos(all 29), qvel(29), target(29), tau(29,
-    transmitted; note this differs from the Isaac applied_torque field),
-    root_pos, root_quat (wxyz), n_contacts
+gains.  Aligned with the ACTUAL Isaac-side delivery (round-3 notes):
+  - q0 = default_joint_pos (the walk-sideway ref frame 0 tips over under
+    pure PD hold); read from the npz q0 field when present
+  - recording at CONTROL steps (dt=0.02, 50Hz) — their physics_context
+    cannot sample per-substep
+  - targets updated every control step (0.02s), physics at 0.005 x4
+  - FREE root, planted feet, non-perturbed joints PD-held at q0
+  - perturb hip_pitch / hip_roll / knee: steps +-0.05/0.1/0.2, sines
+    0.5/2/5 Hz @ 0.05
 """
 import argparse
 import os
@@ -46,6 +42,12 @@ ISAAC_JOINTS = ["lh_pitch", "rh_pitch", "waist_yaw", "lh_roll", "rh_roll",
                 "l_wr_pitch", "r_wr_pitch", "l_wr_yaw", "r_wr_yaw"]
 XML2ISAAC = [ISAAC_JOINTS.index(n) for n in XML_JOINTS]
 DT = 0.005
+ACT_OFFSET_FALLBACK = np.array([
+    -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
+    -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
+    0.0, 0.0, 0.0,
+    0.2, 0.2, 0.0, 0.6, 0.0, 0.0, 0.0,
+    0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0], dtype=np.float32)
 
 
 def run_group(art, scene, j, target_fn, t_end, q0, record_contacts=True):
@@ -55,13 +57,16 @@ def run_group(art, scene, j, target_fn, t_end, q0, record_contacts=True):
            "root_pos": [], "root_quat": [], "n_contacts": []}
     t = 0.0
     while t <= t_end + 1e-6:
+        # control step: 4 physics substeps, target updated per control step,
+        # recorded at 50Hz (matches the Isaac actual behavior)
         targets = q0.copy()
         targets[j] = target_fn(t)
         art.set_joint_drive_targets(targets.astype(np.float32))
         if record_contacts:
             scene.clear_contacts()
-        scene.simulate(DT)
-        scene.fetch_results()
+        for _ in range(4):
+            scene.simulate(DT)
+            scene.fetch_results()
         rp, rq = art.get_root_world_pose()
         rec["t"].append(t)
         rec["qpos"].append(art.get_joint_positions().copy())
@@ -71,7 +76,7 @@ def run_group(art, scene, j, target_fn, t_end, q0, record_contacts=True):
         rec["root_pos"].append(rp)
         rec["root_quat"].append(rq)
         rec["n_contacts"].append(len(scene.get_contacts()) if record_contacts else -1)
-        t += DT
+        t += 0.02
     return {k: np.array(v) for k, v in rec.items()}
 
 
@@ -87,9 +92,14 @@ def main():
                  "right_hip_pitch": 6, "right_hip_roll": 7, "right_knee": 9}
 
     z = np.load(NPZ_REF)
-    q0 = z["ref_qpos"][0][XML2ISAAC].astype(np.float32)
-    root0 = z["ref_root_pos"][0].astype(np.float32)
-    rq0 = z["ref_root_quat"][0].astype(np.float32)  # wxyz as-is
+    if "q0" in z.files:
+        q0 = z["q0"][XML2ISAAC].astype(np.float32)  # their embedded default pose
+        print("q0: from npz q0 field", flush=True)
+    else:
+        q0 = ACT_OFFSET_FALLBACK.astype(np.float32)
+        print("q0: ACT_OFFSET fallback", flush=True)
+    root0 = z["root_pos"][0].astype(np.float32)
+    rq0 = z["root_quat"][0].astype(np.float32)  # wxyz as-is (their initial, upright)
 
     physx_core.init_foundation()
     from gear_sonic.envs.physx_env import PhysXEnv
@@ -122,10 +132,11 @@ def main():
         for a in (0.05, 0.1, 0.2):
             for sign in (+1.0, -1.0):
                 tag = f"r3_{jname}_step_{a}{'p' if sign > 0 else 'n'}"
-                for _ in range(100):
+                for _ in range(25):
                     env.art.set_joint_drive_targets(q0)
-                    env.scene.simulate(DT)
-                    env.scene.fetch_results()
+                    for _ in range(4):
+                        env.scene.simulate(DT)
+                        env.scene.fetch_results()
                 rec = run_group(env.art, env.scene, j,
                                 lambda t, a=a, s=sign: q0[j] + s * a,
                                 2.0, q0)
@@ -134,10 +145,11 @@ def main():
                       f"root_z_end={rec['root_pos'][-1, 2]:.3f}", flush=True)
         for f in (0.5, 2.0, 5.0):
             tag = f"r3_{jname}_sine_{f}"
-            for _ in range(100):
+            for _ in range(25):
                 env.art.set_joint_drive_targets(q0)
-                env.scene.simulate(DT)
-                env.scene.fetch_results()
+                for _ in range(4):
+                    env.scene.simulate(DT)
+                    env.scene.fetch_results()
             rec = run_group(env.art, env.scene, j,
                             lambda t, f=f: q0[j] + 0.05 * np.sin(2 * np.pi * f * t),
                             4.0, q0)
