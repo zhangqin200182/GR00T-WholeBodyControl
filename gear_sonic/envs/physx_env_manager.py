@@ -223,10 +223,12 @@ def _worker_loop(worker_id, start_env, num_envs, shm_names, barrier,
     _vel_iters = int(os.environ.get("SONIC_PHYSX_VEL_ITERS", "1"))
     _native_dt = float(os.environ.get("SONIC_PHYSX_NATIVE_DT", "0.001961"))
     _decimation = int(os.environ.get("SONIC_PHYSX_DECIMATION", "10"))
+    _root_z_offset = float(os.environ.get("SONIC_PHYSX_ROOT_Z_OFFSET",
+                                          str(root_z_offset)))
     envs = [PhysXEnv(px, model_xml, pkl_dir, config=env_config,
                      native_dt=_native_dt, decimation=_decimation,
                      pos_iters=8, vel_iters=_vel_iters,
-                     static_pose=static_pose, root_z_offset=root_z_offset,
+                     static_pose=static_pose, root_z_offset=_root_z_offset,
                      standing_prob=standing_prob, drive_type=_drive_type)
             for _ in range(num_envs)]
 

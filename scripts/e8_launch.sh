@@ -24,6 +24,10 @@ export SONIC_PHYSX_FRICTION_CORR_DIST=0.025
 export SONIC_PHYSX_VEL_ITERS=4
 export SONIC_PHYSX_NATIVE_DT=0.005
 export SONIC_PHYSX_DECIMATION=4
+export SONIC_PHYSX_ROOT_Z_OFFSET=0.02
+# rz note: 0.02 = Isaac-faithful reset height (capsule fan bottom at ground);
+# the gate-ON -13% (12.17->10.62) vs the 2x2 stack was attributed to rz but
+# never single-variable verified — BC smoke runs an rz 0.04 control group.
 # armature / velocity limits / depenetration: default ON (Isaac values)
 
 echo "E8 stack:"
