@@ -1,0 +1,73 @@
+=== actuator runtime info (per group, joint-mean) ===
+  legs: {'joints': 8, 'stiffness': 84.368629, 'damping': 5.371074, 'armature': 0.021371, 'effort_limit': 126.25}
+  feet: {'joints': 4, 'stiffness': 28.501245, 'damping': 1.814446, 'armature': 0.007219, 'effort_limit': 50.0}
+  waist: {'joints': 2, 'stiffness': 28.501245, 'damping': 1.814446, 'armature': 0.007219, 'effort_limit': 50.0}
+  waist_yaw: {'joints': 1, 'stiffness': 40.179237, 'damping': 2.55789, 'armature': 0.010178, 'effort_limit': 88.0}
+  arms: {'joints': 14, 'stiffness': 14.972825, 'damping': 0.9532, 'armature': 0.003793, 'effort_limit': 19.285715}
+=== end actuator info ===
+pinned -5mm  (100 steps, last-10-step means)
+  left_ankle_pitch_link: pos=(-0.0167,0.1763,0.0545) |F|=    0.00N
+  right_ankle_pitch_link: pos=(-0.0001,-0.1806,0.0543) |F|=    0.00N
+  left_ankle_roll_link: pos=(-0.0165,0.1780,0.0370) |F|=    0.00N
+  right_ankle_roll_link: pos=(0.0002,-0.1824,0.0368) |F|=    0.00N
+  root_z tail=0.7527 |tau| tail=9.36 Nm
+pinned +0mm  (100 steps, last-10-step means)
+  left_ankle_pitch_link: pos=(-0.0018,0.1185,0.0534) |F|=    0.00N
+  right_ankle_pitch_link: pos=(-0.0014,-0.1186,0.0534) |F|=    0.00N
+  left_ankle_roll_link: pos=(-0.0017,0.1185,0.0359) |F|=    0.00N
+  right_ankle_roll_link: pos=(-0.0013,-0.1186,0.0358) |F|=    0.00N
+  root_z tail=0.7575 |tau| tail=0.05 Nm
+pinned +2mm  (100 steps, last-10-step means)
+  left_ankle_pitch_link: pos=(-0.0015,0.1185,0.0554) |F|=    0.00N
+  right_ankle_pitch_link: pos=(-0.0015,-0.1185,0.0554) |F|=    0.00N
+  left_ankle_roll_link: pos=(-0.0014,0.1185,0.0378) |F|=    0.00N
+  right_ankle_roll_link: pos=(-0.0014,-0.1185,0.0378) |F|=    0.00N
+  root_z tail=0.7595 |tau| tail=0.00 Nm
+pinned +5mm  (100 steps, last-10-step means)
+  left_ankle_pitch_link: pos=(-0.0015,0.1185,0.0584) |F|=    0.00N
+  right_ankle_pitch_link: pos=(-0.0015,-0.1185,0.0584) |F|=    0.00N
+  left_ankle_roll_link: pos=(-0.0014,0.1185,0.0408) |F|=    0.00N
+  right_ankle_roll_link: pos=(-0.0014,-0.1185,0.0408) |F|=    0.00N
+  root_z tail=0.7625 |tau| tail=0.00 Nm
+pinned +10mm  (100 steps, last-10-step means)
+  left_ankle_pitch_link: pos=(-0.0015,0.1185,0.0634) |F|=    0.00N
+  right_ankle_pitch_link: pos=(-0.0015,-0.1185,0.0634) |F|=    0.00N
+  left_ankle_roll_link: pos=(-0.0014,0.1185,0.0458) |F|=    0.00N
+  right_ankle_roll_link: pos=(-0.0014,-0.1185,0.0458) |F|=    0.00N
+  root_z tail=0.7675 |tau| tail=0.00 Nm
+pinned +15mm  (100 steps, last-10-step means)
+  left_ankle_pitch_link: pos=(-0.0015,0.1185,0.0684) |F|=    0.00N
+  right_ankle_pitch_link: pos=(-0.0015,-0.1185,0.0684) |F|=    0.00N
+  left_ankle_roll_link: pos=(-0.0014,0.1185,0.0508) |F|=    0.00N
+  right_ankle_roll_link: pos=(-0.0014,-0.1185,0.0508) |F|=    0.00N
+  root_z tail=0.7725 |tau| tail=0.00 Nm
+pinned +20mm  (100 steps, last-10-step means)
+  left_ankle_pitch_link: pos=(-0.0015,0.1185,0.0734) |F|=    0.00N
+  right_ankle_pitch_link: pos=(-0.0015,-0.1185,0.0734) |F|=    0.00N
+  left_ankle_roll_link: pos=(-0.0014,0.1185,0.0558) |F|=    0.00N
+  right_ankle_roll_link: pos=(-0.0014,-0.1185,0.0558) |F|=    0.00N
+  root_z tail=0.7775 |tau| tail=0.00 Nm
+pinned squat-100mm  (100 steps, last-10-step means)
+  left_ankle_pitch_link: pos=(0.0889,0.1166,0.0526) |F|=    0.00N
+  right_ankle_pitch_link: pos=(0.0816,-0.1199,0.0526) |F|=    0.00N
+  left_ankle_roll_link: pos=(0.0889,0.1166,0.0350) |F|=    0.00N
+  right_ankle_roll_link: pos=(0.0816,-0.1200,0.0350) |F|=    0.00N
+  root_z tail=0.6597 |tau| tail=27.08 Nm
+
+=== [PINNED-SQUAT] per-body |net contact force| (N) ===
+  right_hip_pitch_link                 10.612 N
+  waist_roll_link                     182.037 N
+  right_hip_yaw_link                   10.093 N
+  left_shoulder_pitch_link            182.536 N
+  left_elbow_link                      10.612 N
+  right_wrist_yaw_link                 10.093 N
+  nonzero: 6 / 30
+pinned stand0mm  (100 steps, last-10-step means)
+  left_ankle_pitch_link: pos=(-0.0015,0.1185,0.0534) |F|=    0.00N
+  right_ankle_pitch_link: pos=(-0.0015,-0.1185,0.0534) |F|=    0.00N
+  left_ankle_roll_link: pos=(-0.0014,0.1185,0.0358) |F|=    0.00N
+  right_ankle_roll_link: pos=(-0.0014,-0.1185,0.0358) |F|=    0.00N
+  root_z tail=0.7575 |tau| tail=0.18 Nm
+
+=== [PINNED-STAND] per-body |net contact force| (N) ===
+  nonzero: 0 / 30

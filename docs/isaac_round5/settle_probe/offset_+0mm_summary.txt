@@ -1,0 +1,6 @@
+offset +0 mm  (100 steps, last-10-step means)
+  left_ankle_pitch_link: pos=(0.2633,0.1194,0.2694) quat_wxyz=(0.6227,-0.0048,0.7824,-0.0001) |F|=0.0N Fz=0.0N
+  right_ankle_pitch_link: pos=(0.2632,-0.1140,0.2673) quat_wxyz=(0.6250,-0.0032,0.7806,-0.0028) |F|=103.4N Fz=103.4N
+  left_ankle_roll_link: pos=(0.2462,0.1193,0.2734) quat_wxyz=(0.6227,-0.0048,0.7824,-0.0001) |F|=0.0N Fz=0.0N
+  right_ankle_roll_link: pos=(0.2460,-0.1140,0.2712) quat_wxyz=(0.6250,-0.0032,0.7806,-0.0028) |F|=0.0N Fz=0.0N
+  root_z tail=0.0870 |tau| tail=1.84 Nm |q-q0| tail=0.0893 rad

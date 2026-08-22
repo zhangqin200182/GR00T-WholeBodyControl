@@ -1,0 +1,26 @@
+
+=== [STAND] per-body |net force| (N), 30 bodies ===
+  right_hip_pitch_link                105.096 N
+  right_hip_yaw_link                  109.785 N
+  right_ankle_pitch_link               65.653 N
+  left_elbow_link                      27.524 N
+  right_wrist_yaw_link                 25.461 N
+  -> nonzero: 5, zero: 25
+[STAND] get_contact_count ERR: AttributeError 'RigidContactView' object has no attribute 'get_contact_count'
+[STAND] get_contact_forces ERR: AttributeError 'RigidContactView' object has no attribute 'get_contact_forces'
+[STAND] final root_z=0.0865
+
+=== [SQUAT] per-body |net force| (N), 30 bodies ===
+  pelvis                              209.344 N
+  right_hip_pitch_link                  1.851 N
+  waist_roll_link                      15.996 N
+  right_hip_yaw_link                    1.179 N
+  left_shoulder_pitch_link             15.516 N
+  left_ankle_roll_link                 47.441 N
+  left_elbow_link                       1.851 N
+  right_wrist_roll_link                49.073 N
+  right_wrist_yaw_link                  1.179 N
+  -> nonzero: 9, zero: 21
+[SQUAT] get_contact_count ERR: AttributeError 'RigidContactView' object has no attribute 'get_contact_count'
+[SQUAT] get_contact_forces ERR: AttributeError 'RigidContactView' object has no attribute 'get_contact_forces'
+[SQUAT] final root_z=0.0843
