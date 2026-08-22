@@ -1,0 +1,2 @@
+# kit 的 npz 数据必须随目录走（根 .gitignore 的通用 data/ 规则在此局部否定）
+!data/
