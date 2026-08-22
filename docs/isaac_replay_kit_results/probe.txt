@@ -1,0 +1,9 @@
+========================================================================
+ROBOT collision shapes (/World/envs/env_0/Robot):
+  -> total capsules: 0
+========================================================================
+ROBOT collision material bindings (foot shapes):
+========================================================================
+GROUND (/World/ground):
+  /World/ground/terrain/GroundPlane/CollisionPlane  Plane  size=None  approx=None contactOffset=None restOffset=None  material: unbound (scene default)
+========================================================================
