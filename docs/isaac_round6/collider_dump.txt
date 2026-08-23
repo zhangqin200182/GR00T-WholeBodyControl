@@ -1,0 +1,4 @@
+#### R6-D collider dump (settle scene USD stage) ####
+
+#### filtered pairs (articulation-level) ####
+(pair filter via raw PhysX API not exposed; URDF importer default = parent-child filtering)

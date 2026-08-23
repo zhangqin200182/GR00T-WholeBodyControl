@@ -1,0 +1,58 @@
+#### R6 shape<->link map (URDF collision-tag counts, 45 total = view shape count) ####
+Assumption: view shape order follows URDF link order (links with 0 collision
+tags produce no shape; LL_FOOT/LR_FOOT are xforms attached to ankle_roll).
+pelvis                           shapes [0]
+pelvis_contour_link              no-shape (merged or visual-only)
+left_hip_pitch_link              no-shape (merged or visual-only)
+left_hip_roll_link               shapes [1]
+left_hip_yaw_link                no-shape (merged or visual-only)
+left_knee_link                   shapes [2]
+left_ankle_pitch_link            no-shape (merged or visual-only)
+left_ankle_roll_link             shapes [3-9]  <-- FOOT CAPSULES
+right_hip_pitch_link             no-shape (merged or visual-only)
+right_hip_roll_link              shapes [10]
+right_hip_yaw_link               no-shape (merged or visual-only)
+right_knee_link                  shapes [11]
+right_ankle_pitch_link           no-shape (merged or visual-only)
+right_ankle_roll_link            shapes [12-18]  <-- FOOT CAPSULES
+waist_yaw_link                   no-shape (merged or visual-only)
+waist_roll_link                  no-shape (merged or visual-only)
+torso_link                       shapes [19-22]  (torso 4 shapes)
+logo_link                        no-shape (merged or visual-only)
+head_link                        no-shape (merged or visual-only)
+imu_in_torso                     no-shape (merged or visual-only)
+imu_in_pelvis                    no-shape (merged or visual-only)
+mid360_link                      no-shape (merged or visual-only)
+left_shoulder_pitch_link         no-shape (merged or visual-only)
+left_shoulder_roll_link          no-shape (merged or visual-only)
+left_shoulder_yaw_link           shapes [23]
+left_elbow_link                  shapes [24]
+left_wrist_roll_link             no-shape (merged or visual-only)
+left_wrist_pitch_link            no-shape (merged or visual-only)
+left_wrist_yaw_link              shapes [25]
+left_hand_palm_link              shapes [26]
+left_hand_thumb_0_link           shapes [27]
+left_hand_thumb_1_link           shapes [28]
+left_hand_thumb_2_link           shapes [29]
+left_hand_middle_0_link          shapes [30]
+left_hand_middle_1_link          shapes [31]
+left_hand_index_0_link           shapes [32]
+left_hand_index_1_link           shapes [33]
+right_shoulder_pitch_link        no-shape (merged or visual-only)
+right_shoulder_roll_link         no-shape (merged or visual-only)
+right_shoulder_yaw_link          shapes [34]
+right_elbow_link                 shapes [35]
+right_wrist_roll_link            no-shape (merged or visual-only)
+right_wrist_pitch_link           no-shape (merged or visual-only)
+right_wrist_yaw_link             shapes [36]
+right_hand_palm_link             shapes [37]
+right_hand_thumb_0_link          shapes [38]
+right_hand_thumb_1_link          shapes [39]
+right_hand_thumb_2_link          shapes [40]
+right_hand_middle_0_link         shapes [41]
+right_hand_middle_1_link         shapes [42]
+right_hand_index_0_link          shapes [43]
+right_hand_index_1_link          shapes [44]
+LL_FOOT                          no-shape (merged or visual-only)
+LR_FOOT                          no-shape (merged or visual-only)
+total mapped: 45

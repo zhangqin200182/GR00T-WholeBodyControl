@@ -1,0 +1,6 @@
+official env pinned z=0.7595 (100 steps, last-10-step means, joints locked)
+  left_ankle_pitch_link: pos=(-19.9603,-76.1163,0.0566) |F|=    0.00N
+  right_ankle_pitch_link: pos=(-19.9314,-75.8865,0.0566) |F|=    0.00N
+  left_ankle_roll_link: pos=(-19.9603,-76.1163,0.0390) |F|=  120.36N
+  right_ankle_roll_link: pos=(-19.9314,-75.8868,0.0390) |F|=  118.54N
+  root_z tail=0.7589 |tau| max=0.00

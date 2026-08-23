@@ -1,0 +1,17 @@
+#### SCENE 1: settle/MySceneCfg (G1_CYLINDER_MODEL_12_DEX_CFG) ####
+=== route 1: isaaclab root_physx_view shape-ish methods ===
+view type: ArticulationView; candidate methods: ['generalized_mass_matrix_shape', 'get_contact_offsets', 'get_fixed_tendon_offsets', 'get_material_properties', 'get_rest_offsets', 'get_spatial_tendon_offsets', 'jacobian_shape', 'mass_matrix_shape', 'max_shapes', 'set_contact_offsets', 'set_material_properties', 'set_rest_offsets']
+  get_contact_offsets() -> tensor shape=(1, 45) head=[0.00279999990016222, 0.0020000000949949026, 0.0020000000949949026, 0.00291999988257885, 0.00279999990016222, 0.002599999774247408, 0.0027199999894946814, 0.0020000000949949026]
+  get_fixed_tendon_offsets() -> tensor shape=(1, 0) head=[]
+  get_material_properties() -> tensor shape=(1, 45, 3) head=[1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0]
+  get_rest_offsets() -> tensor shape=(1, 45) head=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  get_spatial_tendon_offsets() -> tensor shape=(1, 0) head=[]
+  set_contact_offsets() ERR TypeError: ArticulationView.set_contact_offsets() missing 2 required positional arguments: 'data' and 'indices'
+  set_material_properties() ERR TypeError: ArticulationView.set_material_properties() missing 2 required positional arguments: 'data' and 'indices'
+  set_rest_offsets() ERR TypeError: ArticulationView.set_rest_offsets() missing 2 required positional arguments: 'data' and 'indices'
+=== route 2: isaacsim.core RigidPrimView ===
+  RigidPrimView import/init ERR: No module named 'isaacsim.core.prims.rigid_prim_view'
+=== route 3: USD PhysxCollisionAPI authored values (foot links) ===
+  (collision-API prims shown 0, total traversed 0)
+=== route 4: scene solver params ===
+  ERR 'PhysxSceneAPI' object has no attribute 'GetBounceThresholdVelocityAttr'
