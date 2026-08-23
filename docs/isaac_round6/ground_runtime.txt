@@ -1,0 +1,7 @@
+#### R6b: official env ground runtime params ####
+terrain type: TerrainImporter
+--- ground USD PhysxCollisionAPI authored ---
+  /World/ground/terrain/mesh Mesh co=-inf ro=-inf
+physics_sim_view: SimulationView
+--- events with 'material' or 'contact' in name ---
+  event scan ERR 'EventManager' object has no attribute 'get_term_names'
