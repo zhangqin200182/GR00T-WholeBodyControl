@@ -112,6 +112,10 @@ MUJOCO_GL=osmesa python3 scripts/record_walk.py \
   --episodes 3 --out /data/sonic/renders/eval.mp4
 ```
 
+注意：§2.2 的冒烟只跑 2 迭代（不到 50 迭代的保存间隔），run 目录里**不会落
+checkpoint**；评估对象用官方权重 `sonic_release/last.pt` 或 §2.3 微调产物的
+run 目录（`logs_rl/TRL_G1_Stub/` 下按时间戳找 `last.pt`）。
+
 **基线判据**（2026-08-25 实测）：官方权重 `sonic_release/last.pt` 在 MuJoCo
 物理下 mean length ≈ 4 步、mean reward ≈ -453（与训练 rollout 的 tensorboard
 `objective/length` 3.3-3.5 一致——官方策略在 MuJoCo 里站不住，这正是微调
