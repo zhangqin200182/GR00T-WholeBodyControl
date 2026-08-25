@@ -1,8 +1,8 @@
-# SONIC 训练全流程指导（NPU 训练 + CPU 推理 + Mac 渲染）
+# SONIC 训练全流程指导（NPU 训练 + CPU 推理 + 服务器离屏渲染）
 
 > 2026-08-25 实测搭建于 192.168.0.47（8× 昇腾 910B3 / 192 核 CPU / aarch64）。
 > 环境已全部就绪并通过训练冒烟验证（2 迭代 RC=0）。新同事按本文档即可跑通三件事：
-> **NPU 上的微调训练、CPU/MuJoCo 推理评估、Mac 上渲染视频**。
+> **NPU 上的微调训练、CPU/MuJoCo 推理评估、服务器上离屏渲染视频（导回本地查看）**。
 > 配套历史文档：《NPU微调与Mac渲染指导.md》（旧机 aura-6 版，本文档为其 47 迁移版）。
 
 ---
@@ -17,7 +17,7 @@ NPU 服务器 192.168.0.47（容器 sonic-train，镜像 sonic-train:v14-base）
 
 你的电脑
  ├─ ssh 连服务器（经跳板 119.8.234.170 或内网直连，见 §1）
- └─ （可选）Mac：抽取纯策略权重 + MuJoCo 离屏渲染视频（见 §4）
+ └─ 渲染好的 mp4 从服务器 scp 回本地查看（见 §4.2）
 ```
 
 ## 1. 连接服务器
@@ -111,15 +111,40 @@ cd /data/sonic/GR00T-WholeBodyControl
 
 要点：`SONIC_MUJOCO_ENV=1` 下 rollout 全在 CPU（MuJoCo worker 进程），
 NPU 只跑学习端——所以"推理"在训练机 CPU 上天然可用，无需单独环境。
-若要在**自己电脑的 CPU** 上推理：把策略权重抽出来（见 §4.1），装
+若要在**自己电脑的 CPU** 上推理：把策略权重抽出来（见 §4.3），装
 mujoco + torch（CPU 版）即可跑，仓库里的 `scripts/record_walk.py` 可作参考。
 
-## 4. Mac 渲染视频（可选，在个人 Mac 上）
+## 4. 渲染视频（默认在服务器容器内，导回本地查看）
 
-### 4.1 抽取纯策略权重（绕开 torch_npu 序列化）
+### 4.1 容器内离屏渲染（默认，2026-08-25 实测）
 
-NPU 容器里的 checkpoint 含 torch_npu 状态，Mac 的 CPU torch 直接 load 会报错。
-在服务器容器内导出纯权重：
+服务器无图形栈，用 OSMesa 软件渲染（libosmesa 已随环境装好，见踩坑 4；
+已用 `g1_29dof_v17.xml` 实测 480×640 出帧正常）。渲染全在 CPU
+（MuJoCo rollout + OSMesa 出帧），不占 NPU：
+
+```bash
+docker exec -it sonic-train bash
+cd /data/sonic/GR00T-WholeBodyControl
+MUJOCO_GL=osmesa python3 scripts/record_walk.py \
+  --ckpt logs_rl/TRL_G1_Stub/<run>/last.pt --out /data/sonic/renders/walk.mp4
+```
+
+- 训练 checkpoint 直接 `torch.load(map_location='cpu')` 用，**无需抽权重**
+- 不要试 EGL：47 是昇腾 NPU 机器，没有 EGL GL 栈，osmesa 是唯一可用后端
+
+### 4.2 导出到本地看结果
+
+```bash
+scp npu47:/data/sonic/renders/walk.mp4 ~/Desktop/
+```
+
+（经跳板 scp 直传即可；也可用 VS Code Remote / sftp 拖文件。）
+
+### 4.3 （可选）Mac 本地渲染
+
+仅在需要脱离服务器、在 Mac 上独立调策略时需要。NPU 容器里的
+checkpoint 含 torch_npu 状态，Mac 的 CPU torch 直接 load 会报错，
+需先在服务器容器内导出纯权重：
 
 ```bash
 docker exec sonic-train python3 -c "
@@ -129,9 +154,8 @@ ckpt = torch.load('logs_rl/TRL_G1_Stub/<run>/last.pt', map_location='cpu')
 # 保存为 policy_sd.pt（纯 CPU tensor）"
 ```
 
-然后 `scp npu47:/data/sonic/GR00T-WholeBodyControl/.../policy_sd.pt ~/`。
-
-### 4.2 Mac 渲染
+然后 `scp npu47:/data/sonic/GR00T-WholeBodyControl/.../policy_sd.pt ~/`，
+在 Mac 上：
 
 ```bash
 cd GR00T-WholeBodyControl    # 本地 clone 的 feature/mujoco-training
@@ -140,7 +164,7 @@ pip install mujoco torch numpy   # Apple Silicon 直接装
 MUJOCO_GL=cgl python3 scripts/record_walk.py --ckpt policy_sd.pt --out walk.mp4
 ```
 
-（`MUJOCO_GL=cgl` 走 Apple OpenGL 离屏渲染；服务器无图形栈不做渲染。）
+（`MUJOCO_GL=cgl` 走 Apple OpenGL 离屏渲染。）
 
 ## 5. 环境重建参考（若容器/机器丢失）
 
@@ -187,6 +211,7 @@ docker exec sonic-train bash -c "apt-get install -y libgl1 libglib2.0-0 libosmes
 训练输出            logs_rl/TRL_G1_Stub/<run>/
 动捕 PKL            sample_data/robot_filtered/{210531,bones_round3}/
 MuJoCo 模型         gear_sonic_deploy/g1/g1_29dof_v17.xml
+渲染输出            /data/sonic/renders/（OSMesa 离屏渲染产物，scp 回本地看）
 镜像归档            /data/images/sonic-train-base-cann852-v14.tar.gz
 依赖配方            /data/images/sonic-train-requirements.txt
 旧环境参考（aura-6） /data/z00666713/GR00T-WholeBodyControl（原始训练现场）
