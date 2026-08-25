@@ -100,26 +100,37 @@ ls -lt logs_rl/TRL_G1_Stub/               # checkpoint 落盘
 
 ## 3. CPU 推理评估（不占 NPU，服务器上即可跑）
 
-训练产出的 checkpoint 可直接在**容器内 CPU** 上做 MuJoCo rollout 评估：
+训练产出的 checkpoint 用 `scripts/record_walk.py` 评估——它在容器内 CPU 上
+跑确定性 rollout（action_mean），打印每个 episode 的 reward / length /
+结束原因，并顺带渲染出视频（评估 + §4 渲染一步到位）：
 
 ```bash
 docker exec -it sonic-train bash
 cd /data/sonic/GR00T-WholeBodyControl
-# 评估指定 checkpoint（写小脚本或用 eval 入口；最简：把 2.2 冒烟的
-# checkpoint 换成你的产物，iterations=1、只看 rollout reward）
+MUJOCO_GL=osmesa python3 scripts/record_walk.py \
+  --ckpt logs_rl/TRL_G1_Stub/<run>/last.pt \
+  --episodes 3 --out /data/sonic/renders/eval.mp4
 ```
+
+**基线判据**（2026-08-25 实测）：官方权重 `sonic_release/last.pt` 在 MuJoCo
+物理下 mean length ≈ 4 步、mean reward ≈ -453（与训练 rollout 的 tensorboard
+`objective/length` 3.3-3.5 一致——官方策略在 MuJoCo 里站不住，这正是微调
+要解决的）。微调后的 checkpoint 应以 **length 持续上升**为有效信号；
+脚本的评估口径与训练一致（alive_bonus=0.0、确定性动作）。
 
 要点：`SONIC_MUJOCO_ENV=1` 下 rollout 全在 CPU（MuJoCo worker 进程），
 NPU 只跑学习端——所以"推理"在训练机 CPU 上天然可用，无需单独环境。
 若要在**自己电脑的 CPU** 上推理：把策略权重抽出来（见 §4.3），装
-mujoco + torch（CPU 版）即可跑，仓库里的 `scripts/record_walk.py` 可作参考。
+mujoco + torch（CPU 版）即可跑，同一个 `scripts/record_walk.py` 直接可用
+（Mac 上把 `MUJOCO_GL` 换成 `cgl`，模型/数据路径用 `--model-xml` /
+`--pkl-dir` 指向本地）。
 
 ## 4. 渲染视频（默认在服务器容器内，导回本地查看）
 
 ### 4.1 容器内离屏渲染（默认，2026-08-25 实测）
 
 服务器无图形栈，用 OSMesa 软件渲染（libosmesa 已随环境装好，见踩坑 4；
-已用 `g1_29dof_v17.xml` 实测 480×640 出帧正常）。渲染全在 CPU
+已用官方权重实测 1280×720 出片正常）。渲染全在 CPU
 （MuJoCo rollout + OSMesa 出帧），不占 NPU：
 
 ```bash
@@ -129,7 +140,8 @@ MUJOCO_GL=osmesa python3 scripts/record_walk.py \
   --ckpt logs_rl/TRL_G1_Stub/<run>/last.pt --out /data/sonic/renders/walk.mp4
 ```
 
-- 训练 checkpoint 直接 `torch.load(map_location='cpu')` 用，**无需抽权重**
+- 官方权重与自训 checkpoint 直接可用（脚本内置 load_release 兼容加载），**无需抽权重**
+- 多 episode 时输出自动拆成 `walk_ep1.mp4`、`walk_ep2.mp4`……
 - 不要试 EGL：47 是昇腾 NPU 机器，没有 EGL GL 栈，osmesa 是唯一可用后端
 
 ### 4.2 导出到本地看结果
@@ -187,6 +199,16 @@ docker run -itd --name sonic-train --runtime=ascend --shm-size 32g \
 docker exec sonic-train bash -c "apt-get install -y libgl1 libglib2.0-0 libosmesa6-dev && \
   pip3 install \$(grep -E '^[a-zA-Z0-9_.-]+==' /data/images/sonic-train-requirements.txt) -i https://pypi.tuna.tsinghua.edu.cn/simple && \
   pip3 install --no-deps 'smplx @ git+https://github.com/ZhengyiLuo/smplx.git@a5b8e4ac14f79f3f33fd2cf2a16e6f507146b813' 'smpl_sim @ git+https://github.com/ZhengyiLuo/SMPLSim.git@b5c08720503ad5fff64050c4d289c42d947fcf8d'"
+```
+
+重建后还必须补两个坑的修复（症状/原因见 §6），漏了跑不起来：
+
+```bash
+# 坑 5：STL 网格是 LFS 指针，必须换成真文件
+cd /data/sonic/GR00T-WholeBodyControl && git lfs pull   # 或从旧真库拷 meshes/*.STL
+# 坑 6：代码里硬编码的容器根绝对路径软链
+docker exec sonic-train bash -c "ln -sf /data/sonic/GR00T-WholeBodyControl/gear_sonic_deploy /gear_sonic_deploy && \
+  ln -sf /data/sonic/GR00T-WholeBodyControl/sample_data /sample_data"
 ```
 
 ## 6. 踩坑全记录（47 搭建实测，每个都踩过）
