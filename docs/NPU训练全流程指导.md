@@ -96,6 +96,28 @@ npu-smi info                              # 看 npu:0 占用
 ls -lt logs_rl/TRL_G1_Stub/               # checkpoint 落盘
 ```
 
+**tensorboard 看曲线**：训练事件实时写在 `logs_rl/TRL_G1_Stub/<run>/tb/`。
+47 无公网、容器又是 host 网络，用 ssh 端口转发在本地浏览器看：
+
+```bash
+# 终端 A（服务器）：容器内起 tensorboard
+docker exec sonic-train tensorboard \
+  --logdir /data/sonic/GR00T-WholeBodyControl/logs_rl/TRL_G1_Stub --port 6006
+# 终端 B（自己电脑）：经跳板转发 6006 端口
+ssh -L 6006:localhost:6006 npu47
+# 浏览器打开 http://localhost:6006
+```
+
+关键指标：
+- `objective/length`：每 episode 存活步数，**微调是否有效的主判据**
+  （官方权重基线 ~3-4 步，微调有效应持续上升）
+- `objective/rewards`：每 episode 总 reward（基线约 -400 量级）
+- `policy/approxkl_avg`、`loss/entropy_avg`、`loss/policy_avg`：PPO 健康度
+- `lr`：adaptive 学习率变化
+
+不想占服务器端口的话，也可以把 `<run>/tb/` 整个 scp 回本地，
+`tensorboard --logdir` 指向本地目录看。
+
 停止训练：`pkill -f train_agent_trl`（checkpoint 每 50 迭代已自动保存）。
 
 ## 3. CPU 推理评估（不占 NPU，服务器上即可跑）
