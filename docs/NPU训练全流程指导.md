@@ -20,6 +20,38 @@ NPU 服务器 192.168.0.47（容器 sonic-train，镜像 sonic-train:v14-base）
  └─ 渲染好的 mp4 从服务器 scp 回本地查看（见 §4.2）
 ```
 
+**全流程图**（训练主循环 + 训练后评估/渲染）：
+
+```
+═══════════════════════ 训练（§2，仿真与学习同时在线滚动）═══════════════════════
+
+  ┌─ NPU npu:0（学习端）───────────────────────────────┐
+  │  策略网络 Actor（37M）                               │
+  │  ① 读观测：actor_obs 930D + tokenizer 1761D          │
+  │  ② 出动作：256 env × 29D                             │
+  │  ④ 攒满 32 步 × 256 env → PPO 更新一次（= 1 迭代）    │
+  └───────┬──────────────────────────────▲─────────────┘
+      动作│ 共享内存（SHM 零拷贝）            │观测 + reward
+          ▼                              │
+  ┌─ CPU 64 个 MuJoCo worker 进程（物理端）─────────────┐
+  │  ③ 每 worker 管 4 个 env：动作 → PD 力矩 → 物理推进    │
+  │     （2ms × 10 子步 = 20ms 控制周期）→ 新观测 + reward │
+  │  reward 参照：33 段动捕（sample_data/robot_filtered） │
+  └────────────────────────────────────────────────┘
+          │ 每 50 迭代
+          ▼
+  checkpoint 落盘：logs_rl/TRL_G1_Stub/<run>/last.pt
+  曲线：tensorboard（<run>/tb/，见 §2.4）
+
+═══════════ 训练后（§3/§4，同一脚本 record_walk.py，不占 NPU）═══════════
+
+  checkpoint ──► CPU 单进程 MuJoCo 确定性 rollout ─┬─► 指标数字（§3 评估）
+                                                  └─► OSMesa 渲染 mp4
+                                                      ─► scp 回本地（§4）
+```
+
+对应章节：§2 训练 = 上图上半部分；§3/§4 = 下半部分。
+
 ## 1. 连接服务器
 
 47 无公网 IP，经跳板机 119.8.234.170 转发。在**自己电脑**的 `~/.ssh/config` 加：
@@ -38,7 +70,12 @@ Host npu47
 （症状：解析到 198.18.x.x、TCP 通但 SSH banner 超时）。解法：给 `*.1617k.com` /
 119.8.234.170 加 DIRECT 规则，或临时关闭增强模式。
 
-## 2. 训练（NPU，容器已就绪）
+## 2. 训练（NPU 学习端 + CPU 仿真端，容器已就绪）
+
+> 训练 = **仿真与学习同时在线滚动**：NPU 上跑策略网络（学习端），64 个
+> MuJoCo worker 进程在 CPU 上持续跑物理仿真（物理端），两者每步交替——
+> 仿真产生数据，学习端消费数据更新策略。所以"CPU 上的仿真"就在本章里，
+> 不是后面的章节。
 
 ### 2.1 进入容器
 
@@ -181,7 +218,16 @@ accelerate launch --num_processes=8 gear_sonic/train_agent_trl.py \
 GPU 物理 + NPU 学习分离的远程方案（GPU 机跑仿真、NPU 机跑训练）是备选路径，
 设计与网络开销分析见 `docs/NPU_GPU_Remote_Training_Design.md` §1-9。
 
-## 3. CPU 推理评估（不占 NPU，服务器上即可跑）
+## 3. CPU 推理评估（训练环节之外，不占 NPU）
+
+> 本章**不在训练环节里**：训练中的 CPU 仿真已包含在 §2（那 64 个 MuJoCo
+> worker 进程）。本章是训练之外，拿产出的 checkpoint 单独跑仿真看指标。
+>
+> **本章目的**：用数字回答"这个 checkpoint 好不好、微调有没有效"——
+> ① 验收：length 是否比官方基线（~3-4 步）持续上升，决定继续训还是停；
+> ② 选型：多个 run / 多个迭代之间挑最好的 checkpoint 交付或续训；
+> ③ 体检：评估口径与训练完全一致，可交叉验证训练是否健康（例如这次实测
+> 发现的"reward 升、length 降"早死退化，就是评估口径下才看得清的）。
 
 训练产出的 checkpoint 用 `scripts/record_walk.py` 评估——它在容器内 CPU 上
 跑确定性 rollout（action_mean），打印每个 episode 的 reward / length /
