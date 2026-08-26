@@ -79,6 +79,9 @@ SONIC_MUJOCO_ENV=1 WANDB_MODE=disabled nohup python3 gear_sonic/train_agent_trl.
 
 要素说明：
 - `SONIC_MUJOCO_ENV=1`：切到 MuJoCo CPU 物理（不用 Isaac）
+- `WANDB_MODE=disabled` + `use_wandb=false`：不上传 Weights & Biases 云端
+  （47 无公网，连不上 wandb 服务器）。只是关掉云日志，训练照常跑，
+  本地日志和 tensorboard 曲线（§2.4）不受影响；有公网的环境想去掉这两个开关即可
 - `+exp=stub_train`：PPO/模型超参（继承官方 ppo_im_phc，未改）
 - `checkpoint=sonic_release/last.pt`：起点权重；**首次从官方权重不加 resume**
   （不恢复官方优化器状态，全新 PPO 进程）
@@ -86,6 +89,18 @@ SONIC_MUJOCO_ENV=1 WANDB_MODE=disabled nohup python3 gear_sonic/train_agent_trl.
   `logs_rl/TRL_G1_Stub/<run>/last.pt`
 - NPU 自动检测：脚本强制 fp32（NPU 无 bf16 torch.normal），device npu:0
 - 资源参考：37M 模型 + 256 env + 64 worker ≈ 单卡 NPU ~16% AICore + 64 CPU 核
+
+**与其他任务共存**（2026-08-26 实测）：47 是多租户机器，别的容器可能也在用
+NPU（当时 `cybergym-baseline-zhouzhi` 占着全部 8 卡：每卡 ~31G HBM、
+AICore 88-99%）。昇腾容器间默认**没有隔离**：
+
+- **AICore 是时间片共享**：多方同卡只是排队轮执行、互相拖慢，不会崩——
+  本文档的冒烟 + 微调流程就是在对方满负载下跑通的（~4-5 秒/迭代）
+- **HBM 是先占先得**：已分配的显存不会被挤掉，但双方合计超过 64G 时
+  后申请者直接 OOM 退出。起训练前 `npu-smi info` 看一眼每卡剩余即可
+  （SONIC 只要几个 G，当时每卡还剩 ~30G，余量充足）
+- 换卡躲不开（对方 8 卡均沾）；要硬隔离需管理员用 vNPU 模板重建容器，
+  一般没必要
 
 ### 2.4 监控
 
@@ -198,6 +213,12 @@ mujoco + torch（CPU 版）即可跑，同一个 `scripts/record_walk.py` 直接
 `--pkl-dir` 指向本地）。
 
 ## 4. 渲染视频（默认在服务器容器内，导回本地查看）
+
+> §3 与 §4 的区别：**§3 评估要的是数字**（reward/length，判断 checkpoint 好坏），
+> **§4 渲染要的是画面**（mp4，直观检查动作质量）。两者用同一个
+> `scripts/record_walk.py`——它一次运行同时产出两者，区别只在参数：
+> §3 用默认模式（倒地即停，口径与训练一致）；§4 想要长视频加 `--keep-going`
+> （倒地重开继续录，见 §4.1）。
 
 ### 4.1 容器内离屏渲染（默认，2026-08-25 实测）
 
