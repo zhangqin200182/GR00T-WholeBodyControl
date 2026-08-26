@@ -120,6 +120,52 @@ ssh -L 6006:localhost:6006 npu47
 
 停止训练：`pkill -f train_agent_trl`（checkpoint 每 50 迭代已自动保存）。
 
+### 2.5 （可选）GPU 上做仿真（Isaac Sim 原版链路）
+
+本文档默认 **CPU 仿真**（`SONIC_MUJOCO_ENV=1`，MuJoCo 在 47 的 192 核 CPU
+上跑）——这是本仓推荐的 NPU 单机方案（性能对比与设计依据见
+`docs/NPU_GPU_Remote_Training_Design.md` §0）。需要 GPU 仿真时走 SONIC 官方
+的 Isaac Sim 链路：
+
+**什么时候需要**
+- 要大吞吐：GPU 上 PhysX 可并行数千 env（官方满配 num_envs=4096、建议 64+ GPU），
+  远超 CPU MuJoCo 的 256 env 规模
+- 要与官方权重的训练物理完全一致：release 策略就是在 Isaac Sim 里训的，
+  在 Isaac 下表现正常；MuJoCo 的物理差距会让它 3-4 步就倒（见 §3 基线）
+
+**前提**
+- x86 + NVIDIA GPU 机器。**47 跑不了**：aarch64 + 昇腾 NPU，Isaac Sim 不支持
+- Isaac Lab 2.3.2 需单独安装（pip 装不了）：先按官方指导装
+  https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html
+  再 `pip install -e "gear_sonic/[training]"`
+
+**跑法**（GPU 机器上，README 官方命令；**不设 `SONIC_MUJOCO_ENV`**）：
+
+```bash
+accelerate launch --num_processes=8 gear_sonic/train_agent_trl.py \
+    +exp=manager/universal_token/all_modes/sonic_release \
+    +checkpoint=sonic_release/last.pt \
+    num_envs=4096 headless=True \
+    ++manager_env.commands.motion.motion_lib_cfg.motion_file=data/motion_lib_bones_seed/robot_filtered \
+    ++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=data/smpl_filtered
+```
+
+（数据准备：Bones-SEED 动捕集下载与转换见仓库 README "SONIC Training" 一节；
+多机训练、评估、ONNX 导出见官方文档站。）
+
+**与本文档链路的差异速查**
+
+| | 本文档（默认） | GPU/Isaac 链路 |
+|---|---|---|
+| 物理仿真 | MuJoCo CPU（47 的 192 核） | Isaac Sim PhysX（GPU） |
+| 学习端 | 47 的 npu:0 单卡 | GPU 机多卡（accelerate） |
+| 评估 | `scripts/record_walk.py`（CPU） | `gear_sonic/eval_agent_trl.py`（硬依赖 isaaclab，47 跑不了） |
+| 渲染 | OSMesa CPU 离屏 | Isaac 摄像头（`enable_cameras`） |
+| 环境变量 | `SONIC_MUJOCO_ENV=1` | 不设 |
+
+GPU 物理 + NPU 学习分离的远程方案（GPU 机跑仿真、NPU 机跑训练）是备选路径，
+设计与网络开销分析见 `docs/NPU_GPU_Remote_Training_Design.md` §1-9。
+
 ## 3. CPU 推理评估（不占 NPU，服务器上即可跑）
 
 训练产出的 checkpoint 用 `scripts/record_walk.py` 评估——它在容器内 CPU 上
@@ -168,6 +214,18 @@ MUJOCO_GL=osmesa python3 scripts/record_walk.py \
 
 - 官方权重与自训 checkpoint 直接可用（脚本内置 load_release 兼容加载），**无需抽权重**
 - 多 episode 时输出自动拆成 `walk_ep1.mp4`、`walk_ep2.mp4`……
+- **视频时长**：默认 episode 结束（倒地/跑完动作）就停。官方权重或微调早期的
+  checkpoint 在 MuJoCo 下只能站 ~3-4 步，录出来只有几帧——要长视频加
+  `--keep-going`：倒地后自动重新开场继续录，录满 `--max-steps` 为止
+  （50fps 实时，300 步 ≈ 6 秒、1000 步 ≈ 20 秒）：
+
+  ```bash
+  MUJOCO_GL=osmesa python3 scripts/record_walk.py \
+    --ckpt logs_rl/TRL_G1_Stub/<run>/last.pt \
+    --episodes 1 --max-steps 1000 --keep-going --out /data/sonic/renders/walk.mp4
+  ```
+
+  日志按"命"统计（每次开场一条命），评估口径与默认模式一致。
 - 不要试 EGL：47 是昇腾 NPU 机器，没有 EGL GL 栈，osmesa 是唯一可用后端
 
 ### 4.2 导出到本地看结果
