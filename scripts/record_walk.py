@@ -137,6 +137,9 @@ def main():
     p.add_argument("--height", type=int, default=720)
     p.add_argument("--fps", type=int, default=0, help="默认 0 = 按 ctrl_dt 实时（50）")
     p.add_argument("--stochastic", action="store_true", help="采样动作而非 action_mean（默认确定性）")
+    p.add_argument("--keep-going", action="store_true",
+                   help="倒地/结束后自动重新开场继续录，录满 --max-steps 才停"
+                        "（官方权重或早期 checkpoint 只能站几步，不加此参数视频只有几帧）")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--model-xml", default="/gear_sonic_deploy/g1/g1_29dof_v17.xml")
     p.add_argument("--pkl-dir", default="/sample_data/robot_filtered")
@@ -181,7 +184,7 @@ def main():
     out_dir = os.path.dirname(os.path.abspath(args.out))
     os.makedirs(out_dir, exist_ok=True)
 
-    ep_rewards, ep_lengths = [], []
+    all_lives = []  # 跨 episode 的所有生命（评估口径 = 每次开场一条命）
     if hasattr(policy, "init_rollout"):
         policy.init_rollout()
 
@@ -194,7 +197,8 @@ def main():
 
         obs = to_torch(env.reset())
         dones = torch.zeros(1, dtype=torch.bool)
-        ep_rew, steps, end_reason = 0.0, 0, "max-steps"
+        lives = []              # [(reward, length, end_reason), ...] 每次开场一条命
+        life_rew, life_len = 0.0, 0
 
         for step in range(args.max_steps):
             with torch.no_grad():
@@ -202,8 +206,8 @@ def main():
             act = psd["actions" if args.stochastic else "action_mean"][0].cpu().numpy()
 
             obs_np, rew, done, info = env.step(act)
-            ep_rew += rew
-            steps = step + 1
+            life_rew += rew
+            life_len += 1
 
             renderer.update_scene(env.data, camera=camera)
             frame = av.VideoFrame.from_ndarray(renderer.render(), format="rgb24")
@@ -213,22 +217,35 @@ def main():
             dones = torch.tensor([done], dtype=torch.bool)
             obs = to_torch(obs_np)
             if done:
-                end_reason = "truncated" if info.get("time_outs") else "terminated"
-                break
+                lives.append((life_rew, life_len,
+                              "truncated" if info.get("time_outs") else "terminated"))
+                life_rew, life_len = 0.0, 0
+                if not args.keep_going:
+                    break
+        if life_len > 0:
+            lives.append((life_rew, life_len, "max-steps"))
 
         for packet in stream.encode():
             container.mux(packet)
         container.close()
-        ep_rewards.append(ep_rew)
-        ep_lengths.append(steps)
-        print(f"episode {ep + 1}: reward={ep_rew:.1f} length={steps} end={end_reason}")
+
+        for i, (r, l, why) in enumerate(lives, 1):
+            print(f"  life {i}: reward={r:.1f} length={l} end={why}")
+        all_lives.extend(lives)
+        print(f"episode {ep + 1}: {len(lives)} lives, total reward={sum(r for r, _, _ in lives):.1f}")
 
     renderer.close()
     if hasattr(policy, "clear_rollout"):
         policy.clear_rollout()
 
-    print(f"\nmean reward={np.mean(ep_rewards):.1f}  mean length={np.mean(ep_lengths):.0f}  "
-          f"({args.episodes} episodes, {'stochastic' if args.stochastic else 'deterministic'})")
+    all_r = [r for r, _, _ in all_lives]
+    all_l = [l for _, l, _ in all_lives]
+    # reward 同时给中位数：个别命里接触力/足端加速度尖峰会爆出 -1e7 量级的
+    # 单步惩罚，平均数会被离群值带偏，不代表策略水平
+    print(f"\nmean reward={np.mean(all_r):.1f} (median {np.median(all_r):.1f})  "
+          f"mean length={np.mean(all_l):.0f}  "
+          f"({len(all_lives)} lives across {args.episodes} episodes, "
+          f"{'stochastic' if args.stochastic else 'deterministic'})")
     print(f"video: {os.path.abspath(args.out)}")
 
 
