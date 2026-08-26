@@ -251,6 +251,12 @@ run 目录（`logs_rl/TRL_G1_Stub/` 下按时间戳找 `last.pt`）。
 要解决的）。微调后的 checkpoint 应以 **length 持续上升**为有效信号；
 脚本的评估口径与训练一致（alive_bonus=0.0、确定性动作）。
 
+**评估时渲染是默认行为，不是可选项**：数字和画面来自同一次 rollout，
+看 checkpoint 要两者对照——length 上升但画面里动作抖动 / 脚下打滑，
+同样说明策略有问题；反过来数字不好时，看视频能直接定位是站不稳、
+跟丢参考动作还是方向跑偏。上面的命令跑完数字打印在终端，视频在
+`/data/sonic/renders/eval_ep*.mp4`，按 §4.2 导回本地看。
+
 要点：`SONIC_MUJOCO_ENV=1` 下 rollout 全在 CPU（MuJoCo worker 进程），
 NPU 只跑学习端——所以"推理"在训练机 CPU 上天然可用，无需单独环境。
 若要在**自己电脑的 CPU** 上推理：把策略权重抽出来（见 §4.3），装
