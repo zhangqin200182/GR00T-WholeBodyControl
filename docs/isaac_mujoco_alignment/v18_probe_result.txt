@@ -1,0 +1,10 @@
+model=g1_29dof_v18_isaac_aligned.xml timestep=0.002 nq=36
+touchdown root_z (sole clearance 0) = 0.7919  sole_below_ankle=-0.0350
+off   +8mm  pin_z=0.7999  ankle_z=0.0080  sole_sep=+0.0080m ncon=0 foot_force=     0.0N
+off   +6mm  pin_z=0.7979  ankle_z=0.0060  sole_sep=+0.0060m ncon=0 foot_force=     0.0N
+off   +5mm  pin_z=0.7969  ankle_z=0.0050  sole_sep=+0.0050m ncon=0 foot_force=     0.0N
+off   +4mm  pin_z=0.7959  ankle_z=0.0040  sole_sep=+0.0040m ncon=20 foot_force=   238.5N
+off   +2mm  pin_z=0.7939  ankle_z=0.0020  sole_sep=+0.0020m ncon=28 foot_force=   362.7N
+off   +0mm  pin_z=0.7919  ankle_z=0.0000  sole_sep=+0.0000m ncon=28 foot_force=   449.3N
+off   -6mm  pin_z=0.7859  ankle_z=-0.0060  sole_sep=-0.0060m ncon=28 foot_force=   690.1N
+off  -25mm  pin_z=0.7669  ankle_z=-0.0250  sole_sep=-0.0250m ncon=28 foot_force=  1476.4N
